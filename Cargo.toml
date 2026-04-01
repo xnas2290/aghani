@@ -1,0 +1,25 @@
+[package]
+name = "tui-music-player"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+crossterm = "0.29.0"
+dirs-next = "2.0.0"
+image = "0.25.10"
+lofty = "0.23.3"
+ratatui = "0.30.0"
+rodio = { version = "0.17", features = ["mp3"] }
+walkdir = "2.5.0"
+ratatui-image = { version = "2.0", features = ["crossterm"] }
+crossbeam-channel = "0.5"
+symphonia = { version = "0.5", features = [
+    "aac",
+    "mp3",
+    "flac",
+    "vorbis",
+    "isomp4",
+    "wav"
+] }
+unicode-width = "0.2.2"
