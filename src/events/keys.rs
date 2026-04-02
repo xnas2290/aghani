@@ -19,7 +19,7 @@ pub enum Action {
     SeekForward,
     SeekBackward,
     ToggleShuffle,
-
+    OpenSearch,
     ExitScope, // for drill-down views, go back to parent scope
     None,
 }
@@ -57,6 +57,8 @@ pub fn map_key(event: KeyEvent) -> Action {
         (KeyCode::Right, _) => Action::SeekForward,
         (KeyCode::Left, _) => Action::SeekBackward,
         (KeyCode::Char('r'), _) => Action::ToggleShuffle,
+        // in map_key():
+        (KeyCode::Char('/'), _) => Action::OpenSearch,
         // Anything else
         _ => Action::None,
     }

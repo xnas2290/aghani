@@ -18,12 +18,15 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // Clear background
     f.render_widget(Clear, area);
-
+    // Fill with explicit background to prevent ghost characters
+    let bg = Block::default().style(Theme::normal());
+    f.render_widget(bg, area);
     let block = Block::default()
         .title(Span::styled(" Save to Playlist ", Theme::title()))
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Theme::border_active());
+        .border_style(Theme::border_active())
+        .style(Theme::overlay_bg());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -51,13 +54,12 @@ pub fn draw(f: &mut Frame, app: &App) {
                 Span::styled(pl.name.clone(), Theme::normal()),
                 Span::styled(format!("  {} songs", pl.track_paths.len()), Theme::dim()),
             ]))
-        })// fn draw_empty(f: &mut Frame, msg: &str, area: Rect) {
-//     f.render_widget(
-//         Paragraph::new(Span::styled(format!("  {}", msg), Theme::dim())),
-//         area,
-//     );
-// }
-
+        }) // fn draw_empty(f: &mut Frame, msg: &str, area: Rect) {
+        //     f.render_widget(
+        //         Paragraph::new(Span::styled(format!("  {}", msg), Theme::dim())),
+        //         area,
+        //     );
+        // }
         .collect();
 
     let mut state = ListState::default();

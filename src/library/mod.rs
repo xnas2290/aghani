@@ -1,7 +1,7 @@
 pub mod scanner;
 pub mod track;
 pub mod playlist;
-
+pub mod cache;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaylistScope {

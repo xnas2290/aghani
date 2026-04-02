@@ -28,7 +28,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ("Tab", "Switch tab"),
         ("x", "Back"),
         ("s", "Save to playlist"),
-        ("d", "Remove from playlist"),
     ];
 
     let mut spans = Vec::new();

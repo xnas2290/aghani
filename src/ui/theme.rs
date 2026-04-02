@@ -43,4 +43,7 @@ impl Theme {
     pub fn border_active() -> Style {
         Style::default().fg(Color::Cyan)
     }
+    pub fn overlay_bg() -> Style {
+        Style::default().fg(Color::White).bg(Color::Black) // explicit black background kills ghost chars
+    }
 }

@@ -1,23 +1,17 @@
-use std::fs::File;
+use std::io::Read;
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, bounded};
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
-
-use symphonia::core::{
-    audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
-    meta::MetadataOptions, probe::Hint,
-};
-use symphonia::default::{get_codecs, get_probe};
 
 pub struct Player {
     _stream: OutputStream,
     _handle: OutputStreamHandle,
-    sink: Arc<Mutex<Sink>>,
+    sink: Sink,
+    current_child: Option<Arc<Mutex<Child>>>,
     pub volume: f32,
     started_at: Option<Instant>,
     paused_elapsed: Duration,
@@ -30,7 +24,8 @@ impl Player {
         Ok(Self {
             _stream: stream,
             _handle: handle,
-            sink: Arc::new(Mutex::new(sink)),
+            sink,
+            current_child: None,
             volume: 1.0,
             started_at: None,
             paused_elapsed: Duration::ZERO,
@@ -38,103 +33,55 @@ impl Player {
     }
 
     pub fn play(&mut self, path: &Path) -> Result<()> {
-        self.play_from(path, Duration::ZERO, false)
+        self.play_from(path, Duration::ZERO)
     }
 
     pub fn seek(&mut self, path: &Path, to: Duration) -> Result<()> {
-        self.play_from(path, to, true)
+        self.play_from(path, to)
     }
 
-    fn play_from(&mut self, path: &Path, offset: Duration, is_seek: bool) -> Result<()> {
-        let file = File::open(path).context("open failed")?;
-        let (tx, rx) = bounded::<Vec<f32>>(64); // large buffer
+    fn play_from(&mut self, path: &Path, offset: Duration) -> Result<()> {
+        // Kill old process and stop sink cleanly
+        self.kill_child();
+        self.sink.stop();
 
-        let path_owned = path.to_owned();
-        let offset_secs = offset.as_secs_f64();
+        let mut child = Command::new("ffmpeg")
+            .args([
+                "-ss",
+                &format!("{:.3}", offset.as_secs_f64()),
+                "-i",
+                path.to_str().context("invalid path")?,
+                "-f",
+                "f32le",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                "-loglevel",
+                "quiet",
+                "pipe:1",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .spawn()
+            .context("ffmpeg not found — please install ffmpeg")?;
 
-        thread::spawn(move || {
-            let mss = MediaSourceStream::new(Box::new(file), Default::default());
-            let mut hint = Hint::new();
-            if let Some(ext) = path_owned.extension().and_then(|e| e.to_str()) {
-                hint.with_extension(ext);
-            }
+        let stdout = child.stdout.take().context("no stdout")?;
+        let child_arc = Arc::new(Mutex::new(child));
+        self.current_child = Some(Arc::clone(&child_arc));
 
-            let probed = match get_probe().format(
-                &hint,
-                mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
-            ) {
-                Ok(p) => p,
-                Err(_) => return,
-            };
+        let source = FfmpegSource {
+            reader: std::io::BufReader::with_capacity(256 * 1024, stdout),
+            child: child_arc,
+            sample_buf: Vec::with_capacity(4096),
+            sample_pos: 0,
+        };
 
-            let mut format = probed.format;
-            let track = match format.default_track() {
-                Some(t) => t,
-                None => return,
-            };
-
-            let sample_rate = track.codec_params.sample_rate.unwrap_or(44100) as f64;
-            let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2) as f64;
-
-            let mut decoder =
-                match get_codecs().make(&track.codec_params, &DecoderOptions::default()) {
-                    Ok(d) => d,
-                    Err(_) => return,
-                };
-
-            let mut samples_to_skip = (offset_secs * sample_rate * channels) as usize;
-
-            loop {
-                let packet = match format.next_packet() {
-                    Ok(p) => p,
-                    Err(_) => break,
-                };
-                let decoded = match decoder.decode(&packet) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let spec = *decoded.spec();
-                let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-                buffer.copy_interleaved_ref(decoded);
-                let samples = buffer.samples().to_vec();
-
-                if samples_to_skip > 0 {
-                    if samples_to_skip >= samples.len() {
-                        samples_to_skip -= samples.len();
-                        continue;
-                    } else {
-                        let remaining = samples[samples_to_skip..].to_vec();
-                        samples_to_skip = 0;
-                        if tx.send(remaining).is_err() {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-
-                if tx.send(samples).is_err() {
-                    break;
-                }
-            }
-        });
-
-        // On seek: pause sink first, let decoder buffer up, then swap + resume
-        // On normal play: swap immediately
-        if is_seek {
-            thread::sleep(Duration::from_millis(120)); // let decoder skip to offset
-        }
-
-        let mut sink_guard = self.sink.lock().unwrap();
-        *sink_guard = Sink::try_new(&self._handle)?;
-        sink_guard.set_volume(self.volume);
-        sink_guard.append(StreamingSource {
-            rx,
-            current: Vec::new().into_iter(),
-            sample_rate: 44100,
-            channels: 2,
-        });
+        // Rebuild sink fresh every time
+        self.sink = Sink::try_new(&self._handle)?;
+        self.sink.set_volume(self.volume);
+        self.sink.append(source);
 
         self.started_at = Some(Instant::now());
         self.paused_elapsed = offset;
@@ -142,10 +89,18 @@ impl Player {
         Ok(())
     }
 
+    fn kill_child(&mut self) {
+        if let Some(child) = self.current_child.take() {
+            if let Ok(mut c) = child.lock() {
+                let _ = c.kill();
+                let _ = c.wait(); // reap zombie
+            }
+        }
+    }
+
     pub fn pause(&mut self) {
-        let sink = self.sink.lock().unwrap();
-        if !sink.is_paused() {
-            sink.pause();
+        if !self.sink.is_paused() {
+            self.sink.pause();
             if let Some(started) = self.started_at.take() {
                 self.paused_elapsed += started.elapsed();
             }
@@ -153,10 +108,8 @@ impl Player {
     }
 
     pub fn resume(&mut self) {
-        let sink = self.sink.lock().unwrap();
-        if sink.is_paused() {
-            sink.play();
-            drop(sink);
+        if self.sink.is_paused() {
+            self.sink.play();
             self.started_at = Some(Instant::now());
         }
     }
@@ -169,18 +122,19 @@ impl Player {
         }
     }
 
-    // pub fn stop(&mut self) {
-    //     self.sink.lock().unwrap().stop();
-    //     self.started_at = None;
-    //     self.paused_elapsed = Duration::ZERO;
-    // }
-
-    pub fn is_paused(&self) -> bool {
-        self.sink.lock().unwrap().is_paused()
+    #[allow(dead_code)]
+    pub fn stop(&mut self) {
+        self.kill_child();
+        self.sink.stop();
+        self.started_at = None;
+        self.paused_elapsed = Duration::ZERO;
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.sink.is_paused()
+    }
     pub fn is_finished(&self) -> bool {
-        self.sink.lock().unwrap().empty()
+        self.sink.empty()
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -190,7 +144,7 @@ impl Player {
 
     pub fn set_volume(&mut self, vol: f32) {
         self.volume = vol.clamp(0.0, 2.0);
-        self.sink.lock().unwrap().set_volume(self.volume);
+        self.sink.set_volume(self.volume);
     }
 
     pub fn volume_up(&mut self) {
@@ -201,41 +155,66 @@ impl Player {
     }
 }
 
-// ── Streaming Source ──────────────────────────────────────────────────────────
+// ── FFmpeg PCM source ─────────────────────────────────────────────────────────
 
-pub struct StreamingSource {
-    rx: Receiver<Vec<f32>>,
-    current: std::vec::IntoIter<f32>,
-    sample_rate: u32,
-    channels: u16,
+struct FfmpegSource {
+    reader: std::io::BufReader<std::process::ChildStdout>,
+    child: Arc<Mutex<Child>>,
+    sample_buf: Vec<f32>,
+    sample_pos: usize,
 }
 
-impl Iterator for StreamingSource {
+impl Iterator for FfmpegSource {
     type Item = f32;
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(s) = self.current.next() {
-                return Some(s);
+
+    fn next(&mut self) -> Option<f32> {
+        // Refill when buffer is exhausted
+        if self.sample_pos >= self.sample_buf.len() {
+            // Read a large chunk of raw bytes (4 bytes per f32 sample)
+            let mut bytes = vec![0u8; 8192 * 4]; // 8192 samples at a time
+            match self.reader.read(&mut bytes) {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => {
+                    // Convert raw bytes to f32 samples
+                    self.sample_buf = bytes[..n]
+                        .chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
+                    self.sample_pos = 0;
+                }
             }
-            match self.rx.recv() {
-                Ok(chunk) => self.current = chunk.into_iter(),
-                Err(_) => return None,
-            }
+        }
+
+        if self.sample_pos < self.sample_buf.len() {
+            let s = self.sample_buf[self.sample_pos];
+            self.sample_pos += 1;
+            Some(s)
+        } else {
+            None
         }
     }
 }
 
-impl Source for StreamingSource {
+impl Source for FfmpegSource {
     fn current_frame_len(&self) -> Option<usize> {
         None
     }
     fn channels(&self) -> u16 {
-        self.channels
+        2
     }
     fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        44100
     }
     fn total_duration(&self) -> Option<Duration> {
         None
+    }
+}
+
+impl Drop for FfmpegSource {
+    fn drop(&mut self) {
+        if let Ok(mut c) = self.child.lock() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }

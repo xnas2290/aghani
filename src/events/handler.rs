@@ -3,7 +3,6 @@ use crate::events::keys::{Action, map_key};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::time::Duration;
-
 pub fn handle_events(app: &mut App) -> Result<bool> {
     if event::poll(Duration::from_millis(50))? {
         if let Event::Key(key) = event::read()? {
@@ -30,7 +29,18 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 }
                 return Ok(false); // consume event, don't fall through
             }
-
+            if app.search_mode {
+                match key.code {
+                    KeyCode::Esc => app.exit_search(),
+                    KeyCode::Enter => app.search_confirm()?,
+                    KeyCode::Down => app.search_select_next(),
+                    KeyCode::Up => app.search_select_prev(),
+                    KeyCode::Backspace => app.search_backspace(),
+                    KeyCode::Char(c) => app.search_type_char(c),
+                    _ => {}
+                }
+                return Ok(false);
+            }
             // Normal input
             let action = map_key(key);
             match action {
@@ -52,6 +62,7 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 Action::SeekForward => app.seek_forward()?,
                 Action::SeekBackward => app.seek_backward()?,
                 Action::ToggleShuffle => app.toggle_shuffle(),
+                Action::OpenSearch => app.enter_search(),
                 Action::None => {}
             }
         }

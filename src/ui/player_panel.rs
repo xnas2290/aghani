@@ -95,14 +95,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .and_then(|e| e.to_str())
             .unwrap_or("?")
             .to_lowercase();
-        let bitrate = track
-            .bitrate
-            .map(|b| format!("{} kbps", b))
-            .unwrap_or_else(|| "—".into());
-        let sr = track
-            .sample_rate
-            .map(|s| format!("{} Hz", s))
-            .unwrap_or_else(|| "—".into());
+        let bitrate = track.bitrate_str();
+        // .map(|b| format!("{} kbps", b))
+        // .unwrap_or_else(|| "—".into());
+        let sr = track.sample_rate_str();
+        // .map(|s| format!("{} Hz", s))
+        // .unwrap_or_else(|| "—".into());
 
         f.render_widget(
             Paragraph::new(Line::from(vec![

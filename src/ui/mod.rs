@@ -6,3 +6,4 @@ pub mod playlist_panel;
 pub mod save_overlay;
 pub mod statusbar;
 pub mod theme;
+pub mod search_overlay;

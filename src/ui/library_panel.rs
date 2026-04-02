@@ -270,9 +270,9 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
 
                 let count = app.album_track_count(album);
                 let right_info = if count == 1 {
-                    "  1 song ".to_string()
+                    " (1 song)  ".to_string()
                 } else {
-                    format!("  {} songs", count)
+                    format!("({} songs)  ", count)
                 };
 
                 let right_width = right_info.width();
