@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::library::{LibraryScope, LibraryTab};
+use crate::library::{LibraryScope, LibraryTab, PlaylistScope};
 use crate::ui::playlist_panel;
 use crate::ui::theme::Theme;
 
@@ -50,18 +50,77 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let in_scope = match app.active_tab {
         LibraryTab::Albums => app.album_scope != LibraryScope::All,
         LibraryTab::Artists => app.artist_scope != LibraryScope::All,
+        LibraryTab::Playlists => matches!(app.playlist_scope, PlaylistScope::Open(_)),
         _ => false,
     };
+
     let hint = if in_scope {
         "  [x] back  [Enter] play"
     } else {
         "  [Enter] open  [Tab] switch"
     };
+
     let status_line = Line::from(vec![
-        Span::styled(app.scope_status(), Theme::accent()),
+        Span::styled(status_text(app), Theme::accent()),
         Span::styled(hint, Theme::dim()),
     ]);
+
     f.render_widget(Paragraph::new(status_line), chunks[2]);
+}
+
+fn status_text(app: &App) -> String {
+    match app.active_tab {
+        LibraryTab::Songs => {
+            if let Some(current) = app.current_index {
+                if let Some(pos) = app.all_track_indices.iter().position(|&i| i == current) {
+                    return format!("{}/{}", pos + 1, app.all_track_indices.len());
+                }
+            }
+            format!("0/{}", app.all_track_indices.len())
+        }
+
+        LibraryTab::Albums => match &app.album_scope {
+            LibraryScope::Album(_) => {
+                if let Some(current) = app.current_index {
+                    if let Some(pos) = app.scoped_track_indices.iter().position(|&i| i == current) {
+                        return format!("{}/{}", pos + 1, app.scoped_track_indices.len());
+                    }
+                }
+                format!("0/{}", app.scoped_track_indices.len())
+            }
+            LibraryScope::All => format!("{} albums", app.albums.len()),
+            _ => String::new(),
+        },
+
+        LibraryTab::Artists => match &app.artist_scope {
+            LibraryScope::Artist(_) => {
+                // you're browsing albums here, so just show album count
+                format!(
+                    "{}/{}",
+                    app.artist_scoped_album_selected.map(|i| i + 1).unwrap_or(0),
+                    app.scoped_albums.len()
+                )
+            }
+            LibraryScope::All => format!("{} artists", app.artists.len()),
+            _ => String::new(),
+        },
+
+        LibraryTab::Playlists => match &app.playlist_scope {
+            PlaylistScope::Open(pi) => {
+                let indices = app.playlist_track_indices(*pi);
+
+                if let Some(current) = app.current_index {
+                    if let Some(pos) = indices.iter().position(|&i| i == current) {
+                        return format!("{}/{}", pos + 1, indices.len());
+                    }
+                }
+
+                format!("0/{}", indices.len())
+            }
+
+            PlaylistScope::All => format!("{} playlists", app.playlists.len()),
+        },
+    }
 }
 
 fn draw_songs(f: &mut Frame, app: &App, area: Rect) {

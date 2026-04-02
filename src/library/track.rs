@@ -9,6 +9,9 @@ pub struct Track {
     pub album: String,
     pub duration: Duration,
     pub has_cover: bool,
+    pub bitrate: Option<u32>,     // kbps
+    pub sample_rate: Option<u32>, // Hz
+    // pub channels: Option<u8>,     // number of audio channels
 }
 
 impl Track {
@@ -25,6 +28,9 @@ impl Track {
             album: String::from("Unknown Album"),
             duration: Duration::ZERO,
             has_cover: false,
+            bitrate: None,
+            sample_rate: None,
+            // channels: None,
         }
     }
 

@@ -16,10 +16,10 @@ pub enum Action {
     SaveToPlaylist,
     DeleteFromPlaylist,
     AddToFavorites,
-    // ConfirmSave,
-    // CancelSave,
-    // SaveSelectUp,
-    // SaveSelectDown,
+    SeekForward,
+    SeekBackward,
+    ToggleShuffle,
+
     ExitScope, // for drill-down views, go back to parent scope
     None,
 }
@@ -33,8 +33,8 @@ pub fn map_key(event: KeyEvent) -> Action {
         (KeyCode::Char(' '), _) => Action::TogglePlay,
 
         // Next / Previous track
-        (KeyCode::Char('n'), _) | (KeyCode::Right, _) => Action::Next,
-        (KeyCode::Char('p'), _) | (KeyCode::Left, _) => Action::Prev,
+        (KeyCode::Char('n'), _) => Action::Next,
+        (KeyCode::Char('p'), _) => Action::Prev,
 
         // Volume control (only + and -)
         (KeyCode::Char('+'), _) | (KeyCode::Char('='), _) => Action::VolumeUp,
@@ -54,6 +54,9 @@ pub fn map_key(event: KeyEvent) -> Action {
         (KeyCode::Char('s'), _) => Action::SaveToPlaylist,
         (KeyCode::Char('d'), _) => Action::DeleteFromPlaylist,
         (KeyCode::Char('f'), _) => Action::AddToFavorites,
+        (KeyCode::Right, _) => Action::SeekForward,
+        (KeyCode::Left, _) => Action::SeekBackward,
+        (KeyCode::Char('r'), _) => Action::ToggleShuffle,
         // Anything else
         _ => Action::None,
     }

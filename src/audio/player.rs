@@ -19,7 +19,6 @@ pub struct Player {
     _handle: OutputStreamHandle,
     sink: Arc<Mutex<Sink>>,
     pub volume: f32,
-
     started_at: Option<Instant>,
     paused_elapsed: Duration,
 }
@@ -28,7 +27,6 @@ impl Player {
     pub fn new() -> Result<Self> {
         let (stream, handle) = OutputStream::try_default()?;
         let sink = Sink::try_new(&handle)?;
-
         Ok(Self {
             _stream: stream,
             _handle: handle,
@@ -40,74 +38,106 @@ impl Player {
     }
 
     pub fn play(&mut self, path: &Path) -> Result<()> {
+        self.play_from(path, Duration::ZERO, false)
+    }
+
+    pub fn seek(&mut self, path: &Path, to: Duration) -> Result<()> {
+        self.play_from(path, to, true)
+    }
+
+    fn play_from(&mut self, path: &Path, offset: Duration, is_seek: bool) -> Result<()> {
         let file = File::open(path).context("open failed")?;
+        let (tx, rx) = bounded::<Vec<f32>>(64); // large buffer
 
-        let (tx, rx) = bounded::<Vec<f32>>(8);
+        let path_owned = path.to_owned();
+        let offset_secs = offset.as_secs_f64();
 
-        // --- Decoder thread ---
-        let path = path.to_owned();
         thread::spawn(move || {
             let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
             let mut hint = Hint::new();
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = path_owned.extension().and_then(|e| e.to_str()) {
                 hint.with_extension(ext);
             }
 
-            let probed = get_probe()
-                .format(
-                    &hint,
-                    mss,
-                    &FormatOptions::default(),
-                    &MetadataOptions::default(),
-                )
-                .unwrap();
+            let probed = match get_probe().format(
+                &hint,
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            ) {
+                Ok(p) => p,
+                Err(_) => return,
+            };
 
             let mut format = probed.format;
+            let track = match format.default_track() {
+                Some(t) => t,
+                None => return,
+            };
 
-            let track = format.default_track().unwrap();
-            let mut decoder = get_codecs()
-                .make(&track.codec_params, &DecoderOptions::default())
-                .unwrap();
+            let sample_rate = track.codec_params.sample_rate.unwrap_or(44100) as f64;
+            let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2) as f64;
+
+            let mut decoder =
+                match get_codecs().make(&track.codec_params, &DecoderOptions::default()) {
+                    Ok(d) => d,
+                    Err(_) => return,
+                };
+
+            let mut samples_to_skip = (offset_secs * sample_rate * channels) as usize;
 
             loop {
                 let packet = match format.next_packet() {
                     Ok(p) => p,
                     Err(_) => break,
                 };
-
                 let decoded = match decoder.decode(&packet) {
                     Ok(d) => d,
                     Err(_) => continue,
                 };
-
                 let spec = *decoded.spec();
                 let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-
                 buffer.copy_interleaved_ref(decoded);
+                let samples = buffer.samples().to_vec();
 
-                // send chunk
-                if tx.send(buffer.samples().to_vec()).is_err() {
+                if samples_to_skip > 0 {
+                    if samples_to_skip >= samples.len() {
+                        samples_to_skip -= samples.len();
+                        continue;
+                    } else {
+                        let remaining = samples[samples_to_skip..].to_vec();
+                        samples_to_skip = 0;
+                        if tx.send(remaining).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+
+                if tx.send(samples).is_err() {
                     break;
                 }
             }
         });
 
-        // --- Create streaming source ---
-        let source = StreamingSource {
+        // On seek: pause sink first, let decoder buffer up, then swap + resume
+        // On normal play: swap immediately
+        if is_seek {
+            thread::sleep(Duration::from_millis(120)); // let decoder skip to offset
+        }
+
+        let mut sink_guard = self.sink.lock().unwrap();
+        *sink_guard = Sink::try_new(&self._handle)?;
+        sink_guard.set_volume(self.volume);
+        sink_guard.append(StreamingSource {
             rx,
             current: Vec::new().into_iter(),
             sample_rate: 44100,
             channels: 2,
-        };
-
-        let mut sink = self.sink.lock().unwrap();
-        *sink = Sink::try_new(&self._handle)?;
-        sink.set_volume(self.volume);
-        sink.append(source);
+        });
 
         self.started_at = Some(Instant::now());
-        self.paused_elapsed = Duration::ZERO;
+        self.paused_elapsed = offset;
 
         Ok(())
     }
@@ -126,6 +156,7 @@ impl Player {
         let sink = self.sink.lock().unwrap();
         if sink.is_paused() {
             sink.play();
+            drop(sink);
             self.started_at = Some(Instant::now());
         }
     }
@@ -137,6 +168,12 @@ impl Player {
             self.pause();
         }
     }
+
+    // pub fn stop(&mut self) {
+    //     self.sink.lock().unwrap().stop();
+    //     self.started_at = None;
+    //     self.paused_elapsed = Duration::ZERO;
+    // }
 
     pub fn is_paused(&self) -> bool {
         self.sink.lock().unwrap().is_paused()
@@ -159,15 +196,12 @@ impl Player {
     pub fn volume_up(&mut self) {
         self.set_volume(self.volume + 0.05);
     }
-
     pub fn volume_down(&mut self) {
         self.set_volume(self.volume - 0.05);
     }
 }
 
-// =========================
-// Streaming Source
-// =========================
+// ── Streaming Source ──────────────────────────────────────────────────────────
 
 pub struct StreamingSource {
     rx: Receiver<Vec<f32>>,
@@ -178,17 +212,13 @@ pub struct StreamingSource {
 
 impl Iterator for StreamingSource {
     type Item = f32;
-
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(sample) = self.current.next() {
-                return Some(sample);
+            if let Some(s) = self.current.next() {
+                return Some(s);
             }
-
             match self.rx.recv() {
-                Ok(chunk) => {
-                    self.current = chunk.into_iter();
-                }
+                Ok(chunk) => self.current = chunk.into_iter(),
                 Err(_) => return None,
             }
         }
@@ -199,15 +229,12 @@ impl Source for StreamingSource {
     fn current_frame_len(&self) -> Option<usize> {
         None
     }
-
     fn channels(&self) -> u16 {
         self.channels
     }
-
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
-
     fn total_duration(&self) -> Option<Duration> {
         None
     }

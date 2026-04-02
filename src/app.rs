@@ -62,6 +62,8 @@ pub struct App {
     pub all_track_indices: Vec<usize>,
     pub scoped_track_indices: Vec<usize>, // indices into self.tracks for current scope
     pub scoped_albums: Vec<String>,       // albums for current artist scope
+    pub shuffle: bool,
+    pub shuffle_order: Vec<usize>,
 }
 
 impl App {
@@ -164,6 +166,8 @@ impl App {
             save_selected: 0,
             playlists,
             play_context: PlayContext::AllTracks,
+            shuffle: false,
+            shuffle_order: vec![],
         })
     }
     /// Resolve playlist track paths to indices in self.tracks
@@ -396,7 +400,9 @@ impl App {
                 if let Some(pos) = self.selected_index {
                     if let Some(&real_idx) = self.all_track_indices.get(pos) {
                         self.play_context = PlayContext::AllTracks;
+                        self.shuffle_order.clear(); // force rebuild with new scope
                         self.play_index(real_idx)?;
+                        if self.shuffle { self.rebuild_shuffle(); }
                     }
                 }
             }
@@ -412,7 +418,9 @@ impl App {
                     if let Some(pos) = self.scoped_song_selected {
                         if let Some(&real_idx) = self.scoped_track_indices.get(pos) {
                             self.play_context = PlayContext::Album;
+                            self.shuffle_order.clear(); // force rebuild with new scope
                             self.play_index(real_idx)?;
+                            if self.shuffle { self.rebuild_shuffle(); }
                         }
                     }
                 }
@@ -441,6 +449,7 @@ impl App {
                 PlaylistScope::All => {
                     if let Some(pi) = self.playlist_selected {
                         self.enter_playlist(pi);
+                        if self.shuffle { self.rebuild_shuffle(); }
                     }
                 }
                 PlaylistScope::Open(pi) => {
@@ -449,7 +458,9 @@ impl App {
                     if let Some(si) = self.playlist_song_selected {
                         if let Some(&real_idx) = indices.get(si) {
                             self.play_context = PlayContext::Playlist(pi);
+                            self.shuffle_order.clear(); // force rebuild with new scope
                             self.play_index(real_idx)?;
+                            if self.shuffle { self.rebuild_shuffle(); }
                         }
                     }
                 }
@@ -498,25 +509,6 @@ impl App {
         self.play_index(indices[prev_pos])
     }
 
-    /// Returns the index list for whatever context is currently playing
-    fn current_play_indices(&self) -> Vec<usize> {
-        match &self.play_context {
-            PlayContext::Playlist(pi) => {
-                let resolved = self.playlist_track_indices(*pi);
-                if !resolved.is_empty() {
-                    return resolved;
-                }
-                self.all_track_indices.clone()
-            }
-            PlayContext::Album => {
-                if !self.scoped_track_indices.is_empty() {
-                    return self.scoped_track_indices.clone();
-                }
-                self.all_track_indices.clone()
-            }
-            PlayContext::AllTracks => self.all_track_indices.clone(),
-        }
-    }
 
     /// Called every tick — auto-advance when a track finishes
     pub fn tick(&mut self) -> Result<()> {
@@ -718,21 +710,7 @@ impl App {
         }
     }
 
-    /// Status line: "12 / 42 songs"
-    pub fn scope_status(&self) -> String {
-        let total = self.scoped_track_indices.len();
-        let current = self
-            .current_index
-            .and_then(|ci| self.scoped_track_indices.iter().position(|&i| i == ci))
-            .map(|p| p + 1)
-            .unwrap_or(0);
 
-        if current > 0 {
-            format!("{} / {} songs", current, total)
-        } else {
-            format!("{} songs", total)
-        }
-    }
     pub fn add_to_favorites(&mut self) -> Result<()> {
         let track_path = match self.active_tab {
             LibraryTab::Songs => self
@@ -755,8 +733,119 @@ impl App {
         }
         Ok(())
     }
+    pub fn seek_forward(&mut self) -> Result<()> {
+        let new_pos = self.player.elapsed() + std::time::Duration::from_secs(5);
+        if let Some(track) = self.current_track() {
+            if new_pos < track.duration {
+                let path = track.path.clone();
+                self.player.seek(&path, new_pos)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn seek_backward(&mut self) -> Result<()> {
+        let elapsed = self.player.elapsed();
+        let new_pos = elapsed.saturating_sub(std::time::Duration::from_secs(5));
+        if let Some(track) = self.current_track() {
+            let path = track.path.clone();
+            self.player.seek(&path, new_pos)?;
+        }
+        Ok(())
+    }
+    pub fn toggle_shuffle(&mut self) {
+        self.shuffle = !self.shuffle;
+        if self.shuffle {
+            self.rebuild_shuffle(); // build fresh order for current scope
+        } else {
+            self.shuffle_order.clear(); // turning off — clear so base order is used
+        }
+    }
+    /// Raw indices for the current play context — never shuffle-aware
+    fn base_play_indices(&self) -> Vec<usize> {
+        match &self.play_context {
+            PlayContext::Playlist(pi) => {
+                let r = self.playlist_track_indices(*pi);
+                if !r.is_empty() {
+                    r
+                } else {
+                    self.all_track_indices.clone()
+                }
+            }
+            PlayContext::Album => {
+                if !self.scoped_track_indices.is_empty() {
+                    self.scoped_track_indices.clone()
+                } else {
+                    self.all_track_indices.clone()
+                }
+            }
+            PlayContext::AllTracks => self.all_track_indices.clone(),
+        }
+    }
+
+    /// Shuffle-aware indices used by next/prev/tick
+    fn current_play_indices(&self) -> Vec<usize> {
+        if self.shuffle && !self.shuffle_order.is_empty() {
+            return self.shuffle_order.clone();
+        }
+        self.base_play_indices()
+    }
+
+    fn rebuild_shuffle(&mut self) {
+        let mut indices = self.base_play_indices(); // ← not current_play_indices
+        let n = indices.len();
+
+        let mut rng_state: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        rng_state ^= self.current_index.unwrap_or(0) as u64 * 0xdeadbeef;
+
+        for i in (1..n).rev() {
+            let j = rand_usize(&mut rng_state) % (i + 1);
+            indices.swap(i, j);
+        }
+
+        if let Some(ci) = self.current_index {
+            if let Some(pos) = indices.iter().position(|&i| i == ci) {
+                indices.swap(0, pos);
+            }
+        }
+
+        self.shuffle_order = indices;
+    }
+    // fn rebuild_shuffle(&mut self) {
+    //     let mut indices = self.current_play_indices();
+    //     let n = indices.len();
+    //     for i in (1..n).rev() {
+    //         let j = Self::rand_usize() % (i + 1);
+    //         indices.swap(i, j);
+    //     }
+    //     // Keep current track at front so it doesn't restart
+    //     if let Some(ci) = self.current_index {
+    //         if let Some(pos) = indices.iter().position(|&i| i == ci) {
+    //             indices.swap(0, pos);
+    //         }
+    //     }
+    //     self.shuffle_order = indices;
+    // }
+
+    // fn rand_usize() -> usize {
+    //     use std::time::SystemTime;
+    //     let seed = SystemTime::now()
+    //         .duration_since(SystemTime::UNIX_EPOCH)
+    //         .unwrap_or_default()
+    //         .subsec_nanos() as usize;
+    //     seed ^ (seed << 13) ^ (seed >> 7)
+    // }
 }
 
+fn rand_usize(state: &mut u64) -> usize {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (*state >> 33) as usize
+}
 // Helper fns (outside impl block):
 fn cycle_next(idx: &mut Option<usize>, len: usize) {
     if len == 0 {

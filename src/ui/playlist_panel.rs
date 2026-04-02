@@ -1,8 +1,8 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState},
+    widgets::{List, ListItem, ListState, Paragraph},
 };
 
 use crate::app::App;
@@ -24,6 +24,7 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
             let count = pl.track_paths.len();
             let is_fav = pl.name.to_lowercase() == "favorites";
             let icon = if is_fav { "♥ " } else { "≡ " };
+
             ListItem::new(Line::from(vec![
                 Span::styled(icon, Theme::accent()),
                 Span::styled(pl.name.clone(), Theme::normal()),
@@ -38,22 +39,46 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
     let list = List::new(items)
         .highlight_style(Theme::highlight())
         .highlight_symbol("› ");
+
     f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
+    let playlist = &app.playlists[pi];
     let indices = app.playlist_track_indices(pi);
+
+    // 👇 split like albums/artists
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Min(0),    // list
+        ])
+        .split(area);
+
+    // 👇 header
+    let header = Paragraph::new(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(playlist.name.to_uppercase(), Theme::accent()),
+        Span::styled(format!("  [{} songs]", indices.len()), Theme::dim()),
+    ]));
+
+    f.render_widget(header, chunks[0]);
+
+    // 👇 list
     let items: Vec<ListItem> = indices
         .iter()
         .map(|&real_idx| {
             let t = &app.tracks[real_idx];
             let is_playing = app.current_index == Some(real_idx);
+
             let icon = if is_playing { "▶ " } else { "  " };
             let style = if is_playing {
                 Theme::accent()
             } else {
                 Theme::normal()
             };
+
             ListItem::new(Line::from(vec![
                 Span::styled(icon.to_string(), style),
                 Span::styled(t.title.clone(), style),
@@ -71,5 +96,6 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
     let list = List::new(items)
         .highlight_style(Theme::highlight())
         .highlight_symbol("› ");
-    f.render_stateful_widget(list, area, &mut state);
+
+    f.render_stateful_widget(list, chunks[1], &mut state);
 }

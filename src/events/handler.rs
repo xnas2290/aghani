@@ -49,6 +49,9 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 Action::AddToFavorites => app.add_to_favorites()?,
                 Action::SaveToPlaylist => app.open_save_mode(),
                 Action::DeleteFromPlaylist => app.delete_from_playlist()?,
+                Action::SeekForward => app.seek_forward()?,
+                Action::SeekBackward => app.seek_backward()?,
+                Action::ToggleShuffle => app.toggle_shuffle(),
                 Action::None => {}
             }
         }
