@@ -34,4 +34,11 @@ impl Track {
         let s = secs % 60;
         format!("{:02}:{:02}", m, s)
     }
+    pub fn extension(&self) -> String {
+        self.path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    }
 }

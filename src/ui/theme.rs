@@ -40,7 +40,7 @@ impl Theme {
         Style::default().fg(Color::DarkGray)
     }
 
-    // pub fn border_active() -> Style {
-    //     Style::default().fg(Color::Cyan)
-    // }
+    pub fn border_active() -> Style {
+        Style::default().fg(Color::Cyan)
+    }
 }

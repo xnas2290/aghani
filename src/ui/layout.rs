@@ -4,7 +4,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::{cover_panel, library_panel, player_panel, statusbar};
+use crate::ui::{cover_panel, library_panel, player_panel, save_overlay, statusbar};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -45,5 +45,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     cover_panel::draw(f, app, left_rows[0]);
     player_panel::draw(f, app, left_rows[1]);
     library_panel::draw(f, app, right);
-    statusbar::draw(f, status_area);
+    statusbar::draw(f, app, status_area);
+    save_overlay::draw(f, app);
 }

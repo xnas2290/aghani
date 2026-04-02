@@ -11,6 +11,16 @@ pub enum Action {
     SelectUp,
     SelectDown,
     ConfirmSelect,
+    TabNext,
+    TabPrev,
+    SaveToPlaylist,
+    DeleteFromPlaylist,
+    AddToFavorites,
+    // ConfirmSave,
+    // CancelSave,
+    // SaveSelectUp,
+    // SaveSelectDown,
+    ExitScope, // for drill-down views, go back to parent scope
     None,
 }
 
@@ -36,7 +46,14 @@ pub fn map_key(event: KeyEvent) -> Action {
 
         // Confirm selection
         (KeyCode::Enter, _) => Action::ConfirmSelect,
-
+        // Tab navigation
+        (KeyCode::Tab, _) => Action::TabNext,
+        (KeyCode::BackTab, _) => Action::TabPrev,
+        // Exit Scope (e.g. from album view back to all songs)
+        (KeyCode::Char('x'), _) => Action::ExitScope,
+        (KeyCode::Char('s'), _) => Action::SaveToPlaylist,
+        (KeyCode::Char('d'), _) => Action::DeleteFromPlaylist,
+        (KeyCode::Char('f'), _) => Action::AddToFavorites,
         // Anything else
         _ => Action::None,
     }
