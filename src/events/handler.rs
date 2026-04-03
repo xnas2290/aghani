@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::events::keys::{Action, map_key};
+use crate::events::keys::{Action, map_key_with_config};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::time::Duration;
@@ -42,7 +42,7 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 return Ok(false);
             }
             // Normal input
-            let action = map_key(key);
+            let action = map_key_with_config(key, &app.keys);
             match action {
                 Action::Quit => return Ok(true),
                 Action::TogglePlay => app.toggle_play()?,
@@ -63,6 +63,7 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 Action::SeekBackward => app.seek_backward()?,
                 Action::ToggleShuffle => app.toggle_shuffle(),
                 Action::OpenSearch => app.enter_search(),
+                Action::GoToPlaying => app.go_to_playing(),
                 Action::None => {}
             }
         }

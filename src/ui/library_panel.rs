@@ -1,16 +1,16 @@
+use crate::app::App;
+use crate::library::{LibraryScope, LibraryTab, PlaylistScope};
+use crate::ui::make_list_state;
+use crate::ui::playlist_panel;
+use crate::ui::theme::Theme;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Tabs},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Tabs},
 };
 use unicode_width::UnicodeWidthStr;
-
-use crate::app::App;
-use crate::library::{LibraryScope, LibraryTab, PlaylistScope};
-use crate::ui::playlist_panel;
-use crate::ui::theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -142,7 +142,11 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let icon = if is_playing { "▶ " } else { "  " };
-            let right_text = format!("{} [{}]", t.duration_str(), t.extension().to_uppercase());
+            let right_text = if t.extension().len() == 3 {
+                format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase()) // Add an extra space if extension is 3 chars
+            } else {
+                format!("{} [{}]", t.duration_str(), t.extension().to_uppercase())
+            };
             let right_width = right_text.width();
             let total_offset = 6;
             let max_title_width = (area.width as usize).saturating_sub(right_width + total_offset);
@@ -177,8 +181,8 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let mut state = ListState::default();
-    state.select(app.selected_index);
+    let mut state = make_list_state(app.selected_index, app.songs_offset); // ListState::default();
+    // state.select(app.selected_index);
     f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
 }
 
@@ -241,8 +245,8 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
 
-        let mut state = ListState::default();
-        state.select(app.scoped_song_selected);
+        let mut state = make_list_state(app.scoped_song_selected, app.scoped_songs_offset);
+        // state.select(app.scoped_song_selected);
         f.render_stateful_widget(
             List::new(items).highlight_symbol("› "),
             sub_chunks[1],
@@ -270,9 +274,9 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
 
                 let count = app.album_track_count(album);
                 let right_info = if count == 1 {
-                    " (1 song)  ".to_string()
+                    " 1 song  ".to_string()
                 } else {
-                    format!("({} songs)  ", count)
+                    format!("{} songs ", count)
                 };
 
                 let right_width = right_info.width();
@@ -312,8 +316,7 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
 
-        let mut state = ListState::default();
-        state.select(app.album_selected);
+        let mut state = make_list_state(app.album_selected, app.albums_offset);
         f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
     }
 }
@@ -369,8 +372,7 @@ fn draw_artists(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
 
-        let mut state = ListState::default();
-        state.select(app.artist_scoped_album_selected);
+        let mut state = make_list_state(app.artist_scoped_album_selected, app.artist_albums_offset);
         f.render_stateful_widget(
             List::new(items).highlight_symbol("› "),
             sub_chunks[1],
@@ -433,8 +435,7 @@ fn draw_artists(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
 
-        let mut state = ListState::default();
-        state.select(app.artist_selected);
+        let mut state = make_list_state(app.artist_selected, app.artists_offset);
         f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
     }
 }

@@ -2,15 +2,15 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, Paragraph},
 };
 
 use crate::app::App;
 use crate::library::PlaylistScope;
 use crate::ui::theme::Theme;
 // use unicode_width::UnicodeWidthChar;
+use crate::ui::make_list_state;
 use unicode_width::UnicodeWidthStr;
-
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     match &app.playlist_scope {
         PlaylistScope::All => draw_playlist_list(f, app, area),
@@ -27,7 +27,7 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
             let is_fav = pl.name.to_lowercase() == "favorites";
             let icon = if is_fav { "   ♥ " } else { "   ≡ " };
 
-            let count_text = format!("({} songs)", count);
+            let count_text = format!(" {} songs ", count);
             let total_offset = 6; // spacing from icon + title
             let name_width = pl.name.width();
             let count_width = count_text.width();
@@ -43,7 +43,7 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let mut state = ListState::default();
+    let mut state = make_list_state(app.playlist_selected, app.playlist_list_offset); // ListState::default();
     state.select(app.playlist_selected);
 
     let list = List::new(items)
@@ -128,7 +128,7 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
         })
         .collect();
 
-    let mut state = ListState::default();
+    let mut state = make_list_state(app.playlist_song_selected, app.playlist_songs_offset); //ListState::default();
     state.select(app.playlist_song_selected);
 
     let list = List::new(items)

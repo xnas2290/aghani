@@ -4,7 +4,9 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::{cover_panel, library_panel, player_panel, save_overlay, statusbar,search_overlay};
+use crate::ui::{
+    cover_panel, library_panel, player_panel, save_overlay, search_overlay, statusbar,
+};
 // use crate::ui::search_overlay;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -42,7 +44,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Min(0),     // player panel
         ])
         .split(left);
-
+    // After splitting layout, add:
+    app.list_height = right.height.saturating_sub(4) as usize;
+    app.scoped_list_height = app.list_height.saturating_sub(1);
     cover_panel::draw(f, app, left_rows[0]);
     player_panel::draw(f, app, left_rows[1]);
     library_panel::draw(f, app, right);

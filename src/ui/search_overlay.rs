@@ -2,18 +2,22 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
 };
 
 use crate::app::{App, SearchResult};
+use crate::ui::make_list_state;
 use crate::ui::theme::Theme;
 
-pub fn draw(f: &mut Frame, app: &App) {
+
+
+pub fn draw(f: &mut Frame, app: &mut App) {
     if !app.search_mode {
         return;
     }
 
     let area = centered_rect(60, 70, f.area());
+    app.search_list_height = area.height.saturating_sub(5) as usize;
     f.render_widget(Clear, area);
     // Fill with explicit background to prevent ghost characters
     let bg = Block::default().style(Theme::normal());
@@ -116,7 +120,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             })
             .collect();
 
-        let mut state = ListState::default();
+        let mut state = make_list_state(app.search_selected, app.search_offset); //ListState::default();
         state.select(app.search_selected);
 
         f.render_stateful_widget(

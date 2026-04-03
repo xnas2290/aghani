@@ -1,11 +1,12 @@
 use crate::app::App;
 // use crate::library::playlist::Playlist;
+use crate::ui::make_list_state;
 use crate::ui::theme::Theme;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -62,7 +63,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         // }
         .collect();
 
-    let mut state = ListState::default();
+    let mut state = make_list_state(Some(app.save_selected), app.save_offset); //ListState::default();
     state.select(Some(app.save_selected));
 
     let list = List::new(items)

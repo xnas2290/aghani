@@ -1,49 +1,41 @@
-use anyhow::Result;
-use image::DynamicImage;
-use std::path::Path; //, PathBuf};
-use std::sync::mpsc::Receiver;
-// use ratatui::text::Line;
 use crate::audio::metadata::enrich_track;
 use crate::audio::player::Player;
 use crate::cover::extractor::{decode_cover, load_fallback};
 use crate::library::PlaylistScope;
 use crate::library::playlist::Playlist;
-// use crate::cover::renderer::render_halfblock;
 use crate::library::scanner::scan_directory;
 use crate::library::track::Track;
 use crate::library::{LibraryScope, LibraryTab};
+use anyhow::Result;
+use image::DynamicImage;
 use std::collections::HashMap;
-
-// use std::path::PathBuf;
+use std::path::Path;
+use std::sync::mpsc::Receiver;
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayContext {
     AllTracks,
     Album,
-    Playlist(usize), // playlist index
+    Playlist(usize),
 }
 
 #[derive(Debug, Clone)]
 pub enum SearchResult {
-    Track(usize), // index into self.tracks
+    Track(usize),
     Album(String),
     Artist(String),
     PlaylistTrack {
         playlist_idx: usize,
         track_idx: usize,
-    }, // track index into self.tracks
+    },
 }
 
 pub struct App {
     pub play_context: PlayContext,
-    // pub playlists: Vec<Playlist>,
     pub playlist_scope: PlaylistScope,
-    // pub playlist_selected: Option<usize>, // cursor in playlist list
-    pub playlist_song_selected: Option<usize>, // cursor inside an open playlist
-    // pub music_dir: PathBuf,
+    pub playlist_song_selected: Option<usize>,
     pub playlists: Vec<Playlist>,
-    // Save-to-playlist overlay
     pub save_mode: bool,
-    pub save_candidates: Vec<usize>, // playlist indices that don't have the song yet
+    pub save_candidates: Vec<usize>,
     pub save_selected: usize,
     pub artist_album_counts: HashMap<String, usize>,
     pub tracks: Vec<Track>,
@@ -51,45 +43,54 @@ pub struct App {
     pub current_index: Option<usize>,
     pub selected_index: Option<usize>,
     pub scoped_song_selected: Option<usize>,
-    /// Pre-rendered half-block lines for the current cover
     pub cover_image: Option<ratatui_image::protocol::StatefulProtocol>,
     pub picker: ratatui_image::picker::Picker,
     metadata_rx: Receiver<(usize, Track, Option<Vec<u8>>)>,
     pub loading: bool,
     pub loaded_count: usize,
     fallback_cover: Option<DynamicImage>,
-    //scroll
-    // pub scroll_offset: usize,
     pub active_tab: LibraryTab,
-    pub albums: Vec<String>,  // unique album names
-    pub artists: Vec<String>, // unique artist names
-    // pub playlists: Vec<String>, // placeholder for now
+    pub albums: Vec<String>,
+    pub artists: Vec<String>,
     pub album_selected: Option<usize>,
     pub artist_scoped_album_selected: Option<usize>,
     pub artist_selected: Option<usize>,
     pub playlist_selected: Option<usize>,
-    // pub scope: LibraryScope,
-    pub album_scope: LibraryScope,  // Albums tab drill-down
-    pub artist_scope: LibraryScope, // Artists tab drill-down
-    // pub scope_selected: Option<usize>, // selection within a scope view
+    pub album_scope: LibraryScope,
+    pub artist_scope: LibraryScope,
     pub all_track_indices: Vec<usize>,
-    pub scoped_track_indices: Vec<usize>, // indices into self.tracks for current scope
-    pub scoped_albums: Vec<String>,       // albums for current artist scope
+    pub scoped_track_indices: Vec<usize>,
+    pub scoped_albums: Vec<String>,
     pub shuffle: bool,
     pub shuffle_order: Vec<usize>,
     pub search_mode: bool,
     pub search_query: String,
     pub search_results: Vec<SearchResult>,
     pub search_selected: Option<usize>,
+    pub save_offset: usize,
+    // ── Scroll offsets (one per list) ────────────────────────────────────────
+    pub songs_offset: usize,
+    pub albums_offset: usize,
+    pub artists_offset: usize,
+    pub scoped_songs_offset: usize,
+    pub artist_albums_offset: usize,
+    pub playlist_list_offset: usize,
+    pub playlist_songs_offset: usize,
+    pub search_offset: usize,
+    pub list_height: usize, // updated each frame from layout
+    pub scoped_list_height: usize,
+    pub search_list_height: usize,
+    pub keys: crate::config::KeysConfig,
 }
 
 impl App {
     pub fn new(
         music_dir: &Path,
-        metadata_rx: std::sync::mpsc::Receiver<(usize, Track, Option<Vec<u8>>)>,
+        metadata_rx: Receiver<(usize, Track, Option<Vec<u8>>)>,
+        config: &crate::config::Config,
     ) -> Result<Self> {
-        let player = Player::new()?;
-        // Load playlists
+        let mut player = Player::new()?;
+
         let favorites_path = music_dir.join("favorites.m3u");
         let mut playlists: Vec<Playlist> = walkdir::WalkDir::new(music_dir)
             .max_depth(2)
@@ -99,16 +100,14 @@ impl App {
             .filter_map(|e| Playlist::load(e.path()).ok())
             .collect();
 
-        // Ensure Favorites is always first
         if !playlists
             .iter()
             .any(|p| p.name.to_lowercase() == "favorites")
         {
             let fav = Playlist::new("Favorites".to_string(), Some(favorites_path));
-            let _ = fav.save(); // create empty file if not exists
+            let _ = fav.save();
             playlists.insert(0, fav);
         } else {
-            // Move favorites to front
             if let Some(i) = playlists
                 .iter()
                 .position(|p| p.name.to_lowercase() == "favorites")
@@ -117,36 +116,28 @@ impl App {
                 playlists.insert(0, fav);
             }
         }
-        // Scan and eagerly enrich metadata (titles, duration, etc.)
+
         let tracks = scan_directory(music_dir)?;
-
-        let mut albums: Vec<String> = tracks
-            .iter()
-            .map(|t| t.album.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        albums.sort();
-
-        let mut artists: Vec<String> = tracks
-            .iter()
-            .map(|t| t.artist.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        artists.sort();
         let selected_index = if tracks.is_empty() { None } else { Some(0) };
-
-        // Try to load fallback cover
         let fallback_cover = load_fallback(Path::new("assets/default_cover.png")).ok();
         let picker = ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
-        let album_selected = if albums.is_empty() { None } else { Some(0) };
-        let artist_selected = if artists.is_empty() { None } else { Some(0) };
-        let scoped_track_indices = (0..tracks.len()).collect();
-        let all_track_indices = (0..tracks.len()).collect();
 
+        let all_track_indices = (0..tracks.len()).collect();
+        let scoped_track_indices = (0..tracks.len()).collect();
+        // Apply startup tab preference
+        // let active_tab = match config.startup.tab.as_deref() {
+        //     Some("Albums") => LibraryTab::Albums,
+        //     Some("Artists") => LibraryTab::Artists,
+        //     Some("Playlists") => LibraryTab::Playlists,
+        //     _ => LibraryTab::Songs,
+        // };
+
+        // Apply startup volume
+        let volume = config.startup.volume.unwrap_or(1.0).clamp(0.0, 2.0);
+        player.set_volume(volume);
         Ok(App {
+            // active_tab,
             tracks,
             player,
             current_index: None,
@@ -163,21 +154,16 @@ impl App {
             scoped_track_indices,
             artist_album_counts: HashMap::new(),
             fallback_cover,
-            // scroll_offset: 0,
             active_tab: LibraryTab::Songs,
-            album_selected,
-            artist_selected,
+            album_selected: None,
+            artist_selected: None,
             playlist_selected: None,
-            // scope: LibraryScope::All,
             album_scope: LibraryScope::All,
             artist_scope: LibraryScope::All,
             scoped_song_selected: None,
             artist_scoped_album_selected: None,
-            // playlists,
             playlist_scope: PlaylistScope::All,
-            // playlist_selected: Some(0),
             playlist_song_selected: None,
-            // music_dir: music_dir.to_path_buf(),
             save_mode: false,
             save_candidates: vec![],
             save_selected: 0,
@@ -189,27 +175,67 @@ impl App {
             search_query: String::new(),
             search_results: vec![],
             search_selected: None,
+            save_offset: 0,
+            // scroll offsets
+            songs_offset: 0,
+            albums_offset: 0,
+            artists_offset: 0,
+            scoped_songs_offset: 0,
+            artist_albums_offset: 0,
+            playlist_list_offset: 0,
+            playlist_songs_offset: 0,
+            search_offset: 0,
+            list_height: 20,
+            scoped_list_height: 19,
+            search_list_height: 10,
+            keys: config.keys.clone(),
         })
     }
-    /// Resolve playlist track paths to indices in self.tracks
+    // Restore last session if available
+    // (done after drain_metadata fills track data, so we store path and resolve later)
+    pub fn restore_session(&mut self, config: &crate::config::Config) -> Result<()> {
+        // Restore tab
+        if let Some(tab) = &config.session.last_tab {
+            self.active_tab = match tab.as_str() {
+                "Albums" => LibraryTab::Albums,
+                "Artists" => LibraryTab::Artists,
+                "Playlists" => LibraryTab::Playlists,
+                _ => LibraryTab::Songs,
+            };
+        }
+
+        // Restore last track + position
+        if let Some(last_path) = &config.session.last_track {
+            if let Some(idx) = self.tracks.iter().position(|t| &t.path == last_path) {
+                let position = config.session.last_position.unwrap_or(0.0);
+                self.current_index = Some(idx);
+                self.selected_index = Some(idx);
+                self.songs_offset = scroll_offset(Some(idx), 0, self.list_height);
+
+                // Resume from last position
+                let path = self.tracks[idx].path.clone();
+                self.player
+                    .seek(&path, std::time::Duration::from_secs_f64(position))?;
+                self.player.pause(); // start paused, user can resume
+                self.refresh_cover(idx)?;
+            }
+        }
+
+        Ok(())
+    }
     pub fn playlist_track_indices(&self, playlist_idx: usize) -> Vec<usize> {
         let pl = &self.playlists[playlist_idx];
         pl.track_paths
             .iter()
-            .filter_map(|path| {
-                let result = self.tracks.iter().position(|t| &t.path == path);
-                result
-            })
+            .filter_map(|path| self.tracks.iter().position(|t| &t.path == path))
             .collect()
     }
 
     pub fn enter_playlist(&mut self, idx: usize) {
         self.playlist_scope = PlaylistScope::Open(idx);
-        self.playlist_song_selected = if self.playlists[idx].track_paths.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        let resolved = self.playlist_track_indices(idx);
+        self.playlist_song_selected = if resolved.is_empty() { None } else { Some(0) };
+        self.playlist_songs_offset = 0;
     }
 
     pub fn delete_from_playlist(&mut self) -> Result<()> {
@@ -217,7 +243,6 @@ impl App {
             if let Some(si) = self.playlist_song_selected {
                 self.playlists[pi].remove_track(si);
                 self.playlists[pi].save()?;
-                // Adjust cursor
                 let len = self.playlists[pi].track_paths.len();
                 self.playlist_song_selected = if len == 0 {
                     None
@@ -229,9 +254,7 @@ impl App {
         Ok(())
     }
 
-    /// Open save-to-playlist overlay for the currently selected/playing song
     pub fn open_save_mode(&mut self) {
-        // Which track are we saving?
         let track_path = match self.active_tab {
             LibraryTab::Songs => self
                 .selected_index
@@ -244,7 +267,6 @@ impl App {
             None => return,
         };
 
-        // Playlists that DON'T already contain this track
         self.save_candidates = self
             .playlists
             .iter()
@@ -254,10 +276,11 @@ impl App {
             .collect();
 
         if self.save_candidates.is_empty() {
-            return; // song is already in all playlists, nothing to show
+            return;
         }
         self.save_mode = true;
         self.save_selected = 0;
+        self.save_offset = 0;
     }
 
     pub fn confirm_save(&mut self) -> Result<()> {
@@ -293,7 +316,6 @@ impl App {
         let mut changed = false;
         let mut count = 0;
 
-        // Process max 50 per tick to keep UI responsive
         while count < 50 {
             match self.metadata_rx.try_recv() {
                 Ok((i, track, _)) => {
@@ -317,20 +339,14 @@ impl App {
             self.loading = false;
         }
 
-        // Only rebuild every 100 tracks OR when fully done
-        if changed {
-            let should_rebuild = self.loading == false || self.loaded_count % 100 == 0;
-            if should_rebuild {
-                self.rebuild_albums_and_artists();
-            }
+        if changed && (!self.loading || self.loaded_count % 100 == 0) {
+            self.rebuild_albums_and_artists();
         }
     }
 
     fn rebuild_albums_and_artists(&mut self) {
-        // Only rebuild from tracks that have real metadata (not "Unknown")
         let mut seen_albums = std::collections::HashSet::new();
         let mut seen_artists = std::collections::HashSet::new();
-
         let mut albums = Vec::new();
         let mut artists = Vec::new();
 
@@ -346,48 +362,28 @@ impl App {
         albums.sort_unstable();
         artists.sort_unstable();
 
-        // Only update + rebuild caches if something actually changed
         if albums == self.albums && artists == self.artists {
             return;
         }
-        // Replace the artist_album_counts build with a single pass:
-        let mut artist_albums: std::collections::HashMap<
-            String,
-            std::collections::HashSet<String>,
-        > = std::collections::HashMap::new();
 
+        let mut artist_albums: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
         for t in &self.tracks {
             artist_albums
                 .entry(t.artist.clone())
                 .or_default()
                 .insert(t.album.clone());
         }
-
         self.artist_album_counts = artist_albums
             .into_iter()
-            .map(|(artist, albums)| (artist, albums.len()))
+            .map(|(a, albums)| (a, albums.len()))
             .collect();
-        // self.artist_album_counts = artists
-        //     .iter()
-        //     .map(|artist| {
-        //         let count = albums
-        //             .iter()
-        //             .filter(|album| {
-        //                 self.tracks
-        //                     .iter()
-        //                     .any(|t| &t.artist == artist && &t.album == *album)
-        //             })
-        //             .count();
-        //         (artist.clone(), count)
-        //     })
-        //     .collect();
 
         self.albums = albums;
         self.artists = artists;
-
         self.rebuild_album_cache();
         self.rebuild_artist_cache();
     }
+
     fn rebuild_album_cache(&mut self) {
         match &self.album_scope {
             LibraryScope::All => {
@@ -428,11 +424,10 @@ impl App {
             _ => {}
         }
     }
+
     pub fn current_track(&self) -> Option<&Track> {
         self.current_index.and_then(|i| self.tracks.get(i))
     }
-
-    // ── Playback controls ────────────────────────────────────────────────────
 
     pub fn play_index(&mut self, index: usize) -> Result<()> {
         if index >= self.tracks.len() {
@@ -444,13 +439,13 @@ impl App {
         self.refresh_cover(index)?;
         Ok(())
     }
+
     pub fn play_selected(&mut self) -> Result<()> {
         match self.active_tab {
             LibraryTab::Songs => {
                 if let Some(pos) = self.selected_index {
                     if let Some(&real_idx) = self.all_track_indices.get(pos) {
                         self.play_context = PlayContext::AllTracks;
-                        self.shuffle_order.clear(); // force rebuild with new scope
                         self.play_index(real_idx)?;
                         if self.shuffle {
                             self.rebuild_shuffle();
@@ -470,7 +465,6 @@ impl App {
                     if let Some(pos) = self.scoped_song_selected {
                         if let Some(&real_idx) = self.scoped_track_indices.get(pos) {
                             self.play_context = PlayContext::Album;
-                            self.shuffle_order.clear(); // force rebuild with new scope
                             self.play_index(real_idx)?;
                             if self.shuffle {
                                 self.rebuild_shuffle();
@@ -480,7 +474,6 @@ impl App {
                 }
                 _ => {}
             },
-
             LibraryTab::Artists => match &self.artist_scope {
                 LibraryScope::All => {
                     if let Some(ai) = self.artist_selected {
@@ -503,9 +496,6 @@ impl App {
                 PlaylistScope::All => {
                     if let Some(pi) = self.playlist_selected {
                         self.enter_playlist(pi);
-                        if self.shuffle {
-                            self.rebuild_shuffle();
-                        }
                     }
                 }
                 PlaylistScope::Open(pi) => {
@@ -514,7 +504,6 @@ impl App {
                     if let Some(si) = self.playlist_song_selected {
                         if let Some(&real_idx) = indices.get(si) {
                             self.play_context = PlayContext::Playlist(pi);
-                            self.shuffle_order.clear(); // force rebuild with new scope
                             self.play_index(real_idx)?;
                             if self.shuffle {
                                 self.rebuild_shuffle();
@@ -529,7 +518,6 @@ impl App {
 
     pub fn toggle_play(&mut self) -> Result<()> {
         if self.current_index.is_none() {
-            // Nothing loaded yet — play first / selected track
             let idx = self.selected_index.unwrap_or(0);
             self.play_index(idx)?;
         } else {
@@ -537,6 +525,7 @@ impl App {
         }
         Ok(())
     }
+
     pub fn next_track(&mut self) -> Result<()> {
         let indices = self.current_play_indices();
         if indices.is_empty() {
@@ -567,23 +556,18 @@ impl App {
         self.play_index(indices[prev_pos])
     }
 
-    /// Called every tick — auto-advance when a track finishes
     pub fn tick(&mut self) -> Result<()> {
         self.drain_metadata();
-
         if self.current_index.is_some() && self.player.is_finished() {
             self.next_track()?;
         }
         Ok(())
     }
 
-    // ── Library navigation ───────────────────────────────────────────────────
-
     pub fn select_next(&mut self) {
         match self.active_tab {
             LibraryTab::Songs => {
-                let indices = &self.all_track_indices; // always the full list
-                let len = indices.len();
+                let len = self.all_track_indices.len();
                 if len == 0 {
                     return;
                 }
@@ -591,10 +575,15 @@ impl App {
                     Some(i) => (i + 1) % len,
                     None => 0,
                 });
+                self.songs_offset =
+                    scroll_offset(self.selected_index, self.songs_offset, self.list_height);
             }
-
             LibraryTab::Albums => match &self.album_scope {
-                LibraryScope::All => cycle_next(&mut self.album_selected, self.albums.len()),
+                LibraryScope::All => {
+                    cycle_next(&mut self.album_selected, self.albums.len());
+                    self.albums_offset =
+                        scroll_offset(self.album_selected, self.albums_offset, self.list_height);
+                }
                 LibraryScope::Album(_) => {
                     let len = self.scoped_track_indices.len();
                     if len == 0 {
@@ -604,23 +593,50 @@ impl App {
                         Some(i) => (i + 1) % len,
                         None => 0,
                     });
+                    self.scoped_songs_offset = scroll_offset(
+                        self.scoped_song_selected,
+                        self.scoped_songs_offset,
+                        self.scoped_list_height,
+                    );
                 }
                 _ => {}
             },
-
             LibraryTab::Artists => match &self.artist_scope {
-                LibraryScope::All => cycle_next(&mut self.artist_selected, self.artists.len()),
-                LibraryScope::Artist(_) => cycle_next(
-                    &mut self.artist_scoped_album_selected,
-                    self.scoped_albums.len(),
-                ),
+                LibraryScope::All => {
+                    cycle_next(&mut self.artist_selected, self.artists.len());
+                    self.artists_offset =
+                        scroll_offset(self.artist_selected, self.artists_offset, self.list_height);
+                }
+                LibraryScope::Artist(_) => {
+                    cycle_next(
+                        &mut self.artist_scoped_album_selected,
+                        self.scoped_albums.len(),
+                    );
+                    self.artist_albums_offset = scroll_offset(
+                        self.artist_scoped_album_selected,
+                        self.artist_albums_offset,
+                        self.list_height,
+                    );
+                }
                 _ => {}
             },
             LibraryTab::Playlists => match &self.playlist_scope {
-                PlaylistScope::All => cycle_next(&mut self.playlist_selected, self.playlists.len()),
+                PlaylistScope::All => {
+                    cycle_next(&mut self.playlist_selected, self.playlists.len());
+                    self.playlist_list_offset = scroll_offset(
+                        self.playlist_selected,
+                        self.playlist_list_offset,
+                        self.list_height,
+                    );
+                }
                 PlaylistScope::Open(pi) => {
                     let len = self.playlists[*pi].track_paths.len();
                     cycle_next(&mut self.playlist_song_selected, len);
+                    self.playlist_songs_offset = scroll_offset(
+                        self.playlist_song_selected,
+                        self.playlist_songs_offset,
+                        self.list_height,
+                    );
                 }
             },
         }
@@ -643,9 +659,15 @@ impl App {
                     }
                     None => 0,
                 });
+                self.songs_offset =
+                    scroll_offset(self.selected_index, self.songs_offset, self.list_height);
             }
             LibraryTab::Albums => match &self.album_scope {
-                LibraryScope::All => cycle_prev(&mut self.album_selected, self.albums.len()),
+                LibraryScope::All => {
+                    cycle_prev(&mut self.album_selected, self.albums.len());
+                    self.albums_offset =
+                        scroll_offset(self.album_selected, self.albums_offset, self.list_height);
+                }
                 LibraryScope::Album(_) => {
                     let len = self.scoped_track_indices.len();
                     if len == 0 {
@@ -661,48 +683,69 @@ impl App {
                         }
                         None => 0,
                     });
+                    self.scoped_songs_offset = scroll_offset(
+                        self.scoped_song_selected,
+                        self.scoped_songs_offset,
+                        self.scoped_list_height,
+                    );
                 }
                 _ => {}
             },
-
             LibraryTab::Artists => match &self.artist_scope {
-                LibraryScope::All => cycle_prev(&mut self.artist_selected, self.artists.len()),
-                LibraryScope::Artist(_) => cycle_prev(
-                    &mut self.artist_scoped_album_selected,
-                    self.scoped_albums.len(),
-                ),
+                LibraryScope::All => {
+                    cycle_prev(&mut self.artist_selected, self.artists.len());
+                    self.artists_offset =
+                        scroll_offset(self.artist_selected, self.artists_offset, self.list_height);
+                }
+                LibraryScope::Artist(_) => {
+                    cycle_prev(
+                        &mut self.artist_scoped_album_selected,
+                        self.scoped_albums.len(),
+                    );
+                    self.artist_albums_offset = scroll_offset(
+                        self.artist_scoped_album_selected,
+                        self.artist_albums_offset,
+                        self.list_height,
+                    );
+                }
                 _ => {}
             },
             LibraryTab::Playlists => match &self.playlist_scope {
-                PlaylistScope::All => cycle_prev(&mut self.playlist_selected, self.playlists.len()),
+                PlaylistScope::All => {
+                    cycle_prev(&mut self.playlist_selected, self.playlists.len());
+                    self.playlist_list_offset = scroll_offset(
+                        self.playlist_selected,
+                        self.playlist_list_offset,
+                        self.list_height,
+                    );
+                }
                 PlaylistScope::Open(pi) => {
                     let len = self.playlists[*pi].track_paths.len();
                     cycle_prev(&mut self.playlist_song_selected, len);
+                    self.playlist_songs_offset = scroll_offset(
+                        self.playlist_song_selected,
+                        self.playlist_songs_offset,
+                        self.list_height,
+                    );
                 }
             },
         }
     }
-    // ── Volume ───────────────────────────────────────────────────────────────
 
     pub fn volume_up(&mut self) {
         self.player.volume_up();
     }
-
     pub fn volume_down(&mut self) {
         self.player.volume_down();
     }
 
-    // ── Cover art ────────────────────────────────────────────────────────────
-
     fn refresh_cover(&mut self, index: usize) -> Result<()> {
         let track = &mut self.tracks[index];
         let cover_data = enrich_track(track)?;
-
         let img: Option<DynamicImage> = cover_data
             .as_deref()
             .and_then(|bytes| decode_cover(bytes).ok())
             .or_else(|| self.fallback_cover.clone());
-
         self.cover_image = img.map(|i| self.picker.new_resize_protocol(i));
         Ok(())
     }
@@ -724,12 +767,10 @@ impl App {
         self.active_tab = tabs[prev].clone();
     }
 
-    /// Song count for a given album
     pub fn album_track_count(&self, album: &str) -> usize {
         self.tracks.iter().filter(|t| t.album == album).count()
     }
 
-    /// Enter album scope (from Albums tab)
     pub fn enter_album(&mut self, album: String) {
         self.album_scope = LibraryScope::Album(album);
         self.rebuild_album_cache();
@@ -738,6 +779,7 @@ impl App {
         } else {
             Some(0)
         };
+        self.scoped_songs_offset = 0;
     }
 
     pub fn enter_artist(&mut self, artist: String) {
@@ -748,6 +790,7 @@ impl App {
         } else {
             Some(0)
         };
+        self.artist_albums_offset = 0;
     }
 
     pub fn exit_scope(&mut self) {
@@ -755,13 +798,16 @@ impl App {
             LibraryTab::Albums => {
                 self.album_scope = LibraryScope::All;
                 self.rebuild_album_cache();
+                self.scoped_songs_offset = 0;
             }
             LibraryTab::Artists => {
                 self.artist_scope = LibraryScope::All;
                 self.rebuild_artist_cache();
+                self.artist_albums_offset = 0;
             }
             LibraryTab::Playlists => {
                 self.playlist_scope = PlaylistScope::All;
+                self.playlist_songs_offset = 0;
             }
             _ => {}
         }
@@ -779,16 +825,14 @@ impl App {
             Some(p) => p,
             None => return Ok(()),
         };
-
-        // Favorites is always index 0
         if let Some(fav) = self.playlists.first_mut() {
             if fav.add_track(track_path) {
                 fav.save()?;
             }
-            // if add_track returns false it's already in favorites — silently ignore
         }
         Ok(())
     }
+
     pub fn seek_forward(&mut self) -> Result<()> {
         let new_pos = self.player.elapsed() + std::time::Duration::from_secs(5);
         if let Some(track) = self.current_track() {
@@ -809,15 +853,16 @@ impl App {
         }
         Ok(())
     }
+
     pub fn toggle_shuffle(&mut self) {
         self.shuffle = !self.shuffle;
         if self.shuffle {
-            self.rebuild_shuffle(); // build fresh order for current scope
+            self.rebuild_shuffle();
         } else {
-            self.shuffle_order.clear(); // turning off — clear so base order is used
+            self.shuffle_order.clear();
         }
     }
-    /// Raw indices for the current play context — never shuffle-aware
+
     fn base_play_indices(&self) -> Vec<usize> {
         match &self.play_context {
             PlayContext::Playlist(pi) => {
@@ -839,7 +884,6 @@ impl App {
         }
     }
 
-    /// Shuffle-aware indices used by next/prev/tick
     fn current_play_indices(&self) -> Vec<usize> {
         if self.shuffle && !self.shuffle_order.is_empty() {
             return self.shuffle_order.clone();
@@ -848,57 +892,31 @@ impl App {
     }
 
     fn rebuild_shuffle(&mut self) {
-        let mut indices = self.base_play_indices(); // ← not current_play_indices
+        let mut indices = self.base_play_indices();
         let n = indices.len();
-
         let mut rng_state: u64 = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
         rng_state ^= self.current_index.unwrap_or(0) as u64 * 0xdeadbeef;
-
         for i in (1..n).rev() {
             let j = rand_usize(&mut rng_state) % (i + 1);
             indices.swap(i, j);
         }
-
         if let Some(ci) = self.current_index {
             if let Some(pos) = indices.iter().position(|&i| i == ci) {
                 indices.swap(0, pos);
             }
         }
-
         self.shuffle_order = indices;
     }
-    // fn rebuild_shuffle(&mut self) {
-    //     let mut indices = self.current_play_indices();
-    //     let n = indices.len();
-    //     for i in (1..n).rev() {
-    //         let j = Self::rand_usize() % (i + 1);
-    //         indices.swap(i, j);
-    //     }
-    //     // Keep current track at front so it doesn't restart
-    //     if let Some(ci) = self.current_index {
-    //         if let Some(pos) = indices.iter().position(|&i| i == ci) {
-    //             indices.swap(0, pos);
-    //         }
-    //     }
-    //     self.shuffle_order = indices;
-    // }
 
-    // fn rand_usize() -> usize {
-    //     use std::time::SystemTime;
-    //     let seed = SystemTime::now()
-    //         .duration_since(SystemTime::UNIX_EPOCH)
-    //         .unwrap_or_default()
-    //         .subsec_nanos() as usize;
-    //     seed ^ (seed << 13) ^ (seed >> 7)
-    // }
     pub fn enter_search(&mut self) {
         self.search_mode = true;
         self.search_query.clear();
         self.search_results.clear();
         self.search_selected = None;
+        self.search_offset = 0;
     }
 
     pub fn exit_search(&mut self) {
@@ -906,28 +924,29 @@ impl App {
         self.search_query.clear();
         self.search_results.clear();
         self.search_selected = None;
+        self.search_offset = 0;
     }
 
     pub fn search_type_char(&mut self, c: char) {
         self.search_query.push(c);
         self.run_search();
+        self.search_offset = 0;
     }
 
     pub fn search_backspace(&mut self) {
         self.search_query.pop();
         self.run_search();
+        self.search_offset = 0;
     }
 
     fn run_search(&mut self) {
         self.search_results.clear();
         self.search_selected = None;
-
         let q = self.search_query.to_lowercase();
         if q.is_empty() {
             return;
         }
 
-        // Tracks
         for (i, t) in self.tracks.iter().enumerate() {
             if t.title.to_lowercase().contains(&q)
                 || t.artist.to_lowercase().contains(&q)
@@ -936,29 +955,22 @@ impl App {
                 self.search_results.push(SearchResult::Track(i));
             }
         }
-
-        // Albums
         for album in &self.albums {
             if album.to_lowercase().contains(&q) {
                 self.search_results.push(SearchResult::Album(album.clone()));
             }
         }
-
-        // Artists
         for artist in &self.artists {
             if artist.to_lowercase().contains(&q) {
                 self.search_results
                     .push(SearchResult::Artist(artist.clone()));
             }
         }
-
-        // Playlist tracks
         for (pi, playlist) in self.playlists.iter().enumerate() {
             for path in &playlist.track_paths {
                 if let Some(ti) = self.tracks.iter().position(|t| &t.path == path) {
                     let t = &self.tracks[ti];
                     if t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q) {
-                        // Avoid duplicating tracks already found globally
                         if !self
                             .search_results
                             .iter()
@@ -973,7 +985,6 @@ impl App {
                 }
             }
         }
-
         if !self.search_results.is_empty() {
             self.search_selected = Some(0);
         }
@@ -988,6 +999,11 @@ impl App {
             Some(i) => (i + 1) % len,
             None => 0,
         });
+        self.search_offset = scroll_offset(
+            self.search_selected,
+            self.search_offset,
+            self.search_list_height,
+        );
     }
 
     pub fn search_select_prev(&mut self) {
@@ -1005,6 +1021,11 @@ impl App {
             }
             None => 0,
         });
+        self.search_offset = scroll_offset(
+            self.search_selected,
+            self.search_offset,
+            self.search_list_height,
+        );
     }
 
     pub fn search_confirm(&mut self) -> Result<()> {
@@ -1019,6 +1040,10 @@ impl App {
                     self.rebuild_shuffle();
                 }
                 self.exit_search();
+                // Switch to Songs tab and move cursor to the playing song
+                self.active_tab = LibraryTab::Songs;
+                self.selected_index = Some(ti);
+                self.songs_offset = scroll_offset(Some(ti), self.songs_offset, self.list_height);
                 self.play_index(ti)?;
             }
             Some(SearchResult::Album(album)) => {
@@ -1046,6 +1071,70 @@ impl App {
         }
         Ok(())
     }
+
+    pub fn go_to_playing(&mut self) {
+        let ci = match self.current_index {
+            Some(i) => i,
+            None => return,
+        };
+
+        match &self.play_context.clone() {
+            PlayContext::AllTracks => {
+                self.active_tab = LibraryTab::Songs;
+                self.selected_index = Some(ci);
+                self.songs_offset = scroll_offset(Some(ci), 0, self.list_height);
+            }
+            PlayContext::Album => {
+                self.active_tab = LibraryTab::Albums;
+                // Make sure album scope is open to the right album
+                if let LibraryScope::Album(_) = &self.album_scope {
+                    // already in correct scope — find position within scoped list
+                    if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
+                        self.scoped_song_selected = Some(pos);
+                        self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+                    }
+                } else {
+                    // scope was cleared — reopen the album from the track's metadata
+                    let album = self.tracks[ci].album.clone();
+                    self.enter_album(album);
+                    if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
+                        self.scoped_song_selected = Some(pos);
+                        self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+                    }
+                }
+            }
+            PlayContext::Playlist(pi) => {
+                let pi = *pi;
+                self.active_tab = LibraryTab::Playlists;
+                self.playlist_scope = PlaylistScope::Open(pi);
+                self.playlist_selected = Some(pi);
+                // Find position within playlist
+                let indices = self.playlist_track_indices(pi);
+                if let Some(pos) = indices.iter().position(|&i| i == ci) {
+                    self.playlist_song_selected = Some(pos);
+                    self.playlist_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+                }
+            }
+        }
+    }
+}
+
+pub fn scroll_offset(
+    selected: Option<usize>,
+    current_offset: usize,
+    visible_height: usize,
+) -> usize {
+    let sel = match selected {
+        Some(s) => s,
+        None => return current_offset,
+    };
+    if sel < current_offset {
+        sel
+    } else if sel >= current_offset + visible_height {
+        sel + 1 - visible_height
+    } else {
+        current_offset
+    }
 }
 
 fn rand_usize(state: &mut u64) -> usize {
@@ -1054,7 +1143,7 @@ fn rand_usize(state: &mut u64) -> usize {
         .wrapping_add(1442695040888963407);
     (*state >> 33) as usize
 }
-// Helper fns (outside impl block):
+
 fn cycle_next(idx: &mut Option<usize>, len: usize) {
     if len == 0 {
         return;
