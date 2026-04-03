@@ -25,10 +25,10 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|pl| {
             let count = pl.track_paths.len();
             let is_fav = pl.name.to_lowercase() == "favorites";
-            let icon = if is_fav { "   ♥ " } else { "   ≡ " };
+            let icon = if is_fav { "  ♥ " } else { "  ≡ " };
 
             let count_text = format!(" {} songs ", count);
-            let total_offset = 6; // spacing from icon + title
+            let total_offset = 4; // spacing from icon + title
             let name_width = pl.name.width();
             let count_width = count_text.width();
             let padding_len = (area.width as usize)
@@ -92,7 +92,11 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
             };
 
             let icon = if is_playing { "▶ " } else { "  " };
-            let right_text = format!("[{}]", t.duration_str());
+            let right_text = if t.extension().len() == 3 {
+                format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase()) // Add an extra space if extension is 3 chars
+            } else {
+                format!("{} [{}]", t.duration_str(), t.extension().to_uppercase())
+            };
             let right_width = right_text.width();
             let total_offset = 6; // spacing
 

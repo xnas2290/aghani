@@ -17,12 +17,11 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::{env, io};
 
 use app::App;
-use config::Config;
+use config::{Config, State};
 use events::handler::handle_events;
 use library::cache::MetadataCache;
 
 fn main() -> Result<()> {
-    // Redirect stderr so ALSA messages don't bleed into TUI
     if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
         use std::os::unix::io::IntoRawFd;
         unsafe {
@@ -30,27 +29,25 @@ fn main() -> Result<()> {
         }
     }
 
-    // Load config — creates default if missing
-    let mut config = Config::load()?;
+    // 1. Load User Config (Static)
+    let config = Config::load()?;
 
-    // CLI arg overrides config music_dir
+    // 2. Load App State (Volatile session info)
+    let mut state = State::load();
+
+    // Determine music dir (CLI > Config)
     let music_dir = env::args()
         .nth(1)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| config.music_dir.clone());
 
     if !music_dir.exists() {
-        eprintln!(
-            "Music directory {:?} does not exist.\n\
-             Set it in ~/.config/aghani/conf or pass as argument: aghani <path>",
-            music_dir
-        );
+        eprintln!("Directory does not exist: {:?}", music_dir);
         std::process::exit(1);
     }
 
-    // Update config with resolved music dir
-    config.music_dir = music_dir.clone();
     ui::theme::init_theme(config.colors.clone());
+
     // Terminal setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -58,10 +55,12 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Cache + channel
+    // App Init
     let cache_path = music_dir.join(".aghani-cache.json");
     let cache = Arc::new(Mutex::new(MetadataCache::load(&cache_path)));
     let (tx, rx) = mpsc::channel();
+
+    // Note: You might need to adjust App::new to take &Config and &State if it uses them
     let mut app = App::new(&music_dir, rx, &config)?;
 
     // Background metadata loader
@@ -72,7 +71,6 @@ fn main() -> Result<()> {
     std::thread::spawn(move || {
         let mut cache = cache_clone.lock().unwrap();
         let mut dirty = false;
-
         for (i, path) in tracks_paths.iter().enumerate() {
             let mut track = crate::library::track::Track::new(path.clone());
             if let Some(cached) = cache.get_valid(path) {
@@ -94,24 +92,25 @@ fn main() -> Result<()> {
                 break;
             }
         }
-
         if dirty {
             let _ = cache.save(&cache_path_clone);
         }
     });
 
-    let result = run_loop(&mut terminal, &mut app, &mut config);
+    // Run app loop
+    let result = run_loop(&mut terminal, &mut app, &config, &state);
 
-    // Save session before exit
-    let last_track = app.current_track().map(|t| t.path.clone());
-    let last_position = if last_track.is_some() {
+    // 3. Save State (and ONLY state) on exit
+    state.last_track = app.current_track().map(|t| t.path.clone());
+    state.last_position = if state.last_track.is_some() {
         Some(app.player.elapsed().as_secs_f64())
     } else {
         None
     };
-    let last_tab = Some(format!("{:?}", app.active_tab));
-    let _ = config.save_session(last_track, last_position, last_tab);
+    state.last_tab = Some(format!("{:?}", app.active_tab));
+    let _ = state.save();
 
+    // Clean up
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -127,12 +126,16 @@ fn main() -> Result<()> {
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    _config: &mut Config,
+    _config: &Config,
+    state: &State,
 ) -> Result<()> {
     let mut was_overlay = false;
     std::thread::sleep(std::time::Duration::from_millis(100));
-    app.drain_metadata(); // process any instantly-available cache hits
-    let _ = app.restore_session(&_config);
+    app.drain_metadata();
+
+    // Restore using the state object
+    let _ = app.restore_session_from_state(state);
+
     loop {
         let is_overlay = app.save_mode || app.search_mode;
         if is_overlay != was_overlay {
@@ -144,11 +147,9 @@ fn run_loop(
             ui::layout::draw(f, app);
         })?;
 
-        let should_quit = handle_events(app)?;
-        if should_quit {
+        if handle_events(app)? {
             break;
         }
-
         app.tick()?;
     }
     Ok(())

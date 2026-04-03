@@ -193,9 +193,40 @@ impl App {
     }
     // Restore last session if available
     // (done after drain_metadata fills track data, so we store path and resolve later)
-    pub fn restore_session(&mut self, config: &crate::config::Config) -> Result<()> {
-        // Restore tab
-        if let Some(tab) = &config.session.last_tab {
+    // pub fn restore_session(&mut self, config: &crate::config::Config) -> Result<()> {
+    //     // Restore tab
+    //     if let Some(tab) = &config.session.last_tab {
+    //         self.active_tab = match tab.as_str() {
+    //             "Albums" => LibraryTab::Albums,
+    //             "Artists" => LibraryTab::Artists,
+    //             "Playlists" => LibraryTab::Playlists,
+    //             _ => LibraryTab::Songs,
+    //         };
+    //     }
+
+    //     // Restore last track + position
+    //     if let Some(last_path) = &config.session.last_track {
+    //         if let Some(idx) = self.tracks.iter().position(|t| &t.path == last_path) {
+    //             let position = config.session.last_position.unwrap_or(0.0);
+    //             self.current_index = Some(idx);
+    //             self.selected_index = Some(idx);
+    //             self.songs_offset = scroll_offset(Some(idx), 0, self.list_height);
+
+    //             // Resume from last position
+    //             let path = self.tracks[idx].path.clone();
+    //             self.player
+    //                 .seek(&path, std::time::Duration::from_secs_f64(position))?;
+    //             self.player.pause(); // start paused, user can resume
+    //             self.refresh_cover(idx)?;
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
+    pub fn restore_session_from_state(&mut self, state: &crate::config::State) -> Result<()> {
+        // 1. Restore the active tab
+        if let Some(tab) = &state.last_tab {
             self.active_tab = match tab.as_str() {
                 "Albums" => LibraryTab::Albums,
                 "Artists" => LibraryTab::Artists,
@@ -204,19 +235,28 @@ impl App {
             };
         }
 
-        // Restore last track + position
-        if let Some(last_path) = &config.session.last_track {
+        // 2. Restore last track, position, and UI offsets
+        if let Some(last_path) = &state.last_track {
+            // Find if the last track still exists in our scanned library
             if let Some(idx) = self.tracks.iter().position(|t| &t.path == last_path) {
-                let position = config.session.last_position.unwrap_or(0.0);
+                let position = state.last_position.unwrap_or(0.0);
+
+                // Sync UI state to the restored track
                 self.current_index = Some(idx);
                 self.selected_index = Some(idx);
+
+                // Note: Ensure scroll_offset and self.list_height are accessible
                 self.songs_offset = scroll_offset(Some(idx), 0, self.list_height);
 
-                // Resume from last position
+                // 3. Setup the player
                 let path = self.tracks[idx].path.clone();
                 self.player
                     .seek(&path, std::time::Duration::from_secs_f64(position))?;
-                self.player.pause(); // start paused, user can resume
+
+                // We usually start paused to avoid surprising the user with noise
+                self.player.pause();
+
+                // Load the album art for the restored track
                 self.refresh_cover(idx)?;
             }
         }
