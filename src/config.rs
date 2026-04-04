@@ -44,6 +44,12 @@ pub struct KeysConfig {
     pub search: String,
     pub go_to_playing: String,
     pub toggle_repeat: String,
+    pub new_playlist: String,
+    pub delete_playlist: String,
+    pub set_layout_1: String,
+    pub set_layout_2: String,
+    pub set_layout_3: String,
+    pub set_layout_4: String,
 }
 
 impl Default for KeysConfig {
@@ -70,6 +76,12 @@ impl Default for KeysConfig {
             search: "/".into(),
             go_to_playing: "g".into(),
             toggle_repeat: "R".into(),
+            new_playlist: "A".into(),
+            delete_playlist: "D".into(),
+            set_layout_1: "1".into(),
+            set_layout_2: "2".into(),
+            set_layout_3: "3".into(),
+            set_layout_4: "4".into(),
         }
     }
 }

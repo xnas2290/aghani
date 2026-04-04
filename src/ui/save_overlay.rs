@@ -49,7 +49,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .map(|&pi| {
             let pl = &app.playlists[pi];
             let is_fav = pl.name.to_lowercase() == "favorites";
-            let icon = if is_fav { "♥ " } else { "≡ " };
+            let icon = if is_fav { " " } else { " " };
             ListItem::new(Line::from(vec![
                 Span::styled(icon, Theme::accent()),
                 Span::styled(pl.name.clone(), Theme::normal()),

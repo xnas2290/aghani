@@ -47,22 +47,22 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         LibraryTab::Playlists => playlist_panel::draw(f, app, chunks[1]),
     }
 
-    let in_scope = match app.active_tab {
-        LibraryTab::Albums => app.album_scope != LibraryScope::All,
-        LibraryTab::Artists => app.artist_scope != LibraryScope::All,
-        LibraryTab::Playlists => matches!(app.playlist_scope, PlaylistScope::Open(_)),
-        _ => false,
-    };
+    // let in_scope = match app.active_tab {
+    //     LibraryTab::Albums => app.album_scope != LibraryScope::All,
+    //     LibraryTab::Artists => app.artist_scope != LibraryScope::All,
+    //     LibraryTab::Playlists => matches!(app.playlist_scope, PlaylistScope::Open(_)),
+    //     _ => false,
+    // };
 
-    let hint = if in_scope {
-        "  [x] back  [Enter] play"
-    } else {
-        "  [Enter] open  [Tab] switch"
-    };
+    // let hint = if in_scope {
+    //     "  [x] back  [Enter] play"
+    // } else {
+    //     "  [Enter] open  [Tab] switch"
+    // };
 
     let status_line = Line::from(vec![
         Span::styled(status_text(app), Theme::accent()),
-        Span::styled(hint, Theme::dim()),
+        // Span::styled(hint, Theme::dim()),
     ]);
 
     f.render_widget(Paragraph::new(status_line), chunks[2]);
@@ -82,7 +82,7 @@ fn status_text(app: &App) -> String {
                 }
             }
             format!("0/{}", app.all_track_indices.len())
-        }       
+        }
 
         LibraryTab::Albums => match &app.album_scope {
             LibraryScope::Album(_) => {

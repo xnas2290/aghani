@@ -1,5 +1,6 @@
 use crate::audio::metadata::enrich_track;
 use crate::audio::player::Player;
+
 // use crate::audio::player::PlayerCommand;
 use crate::cover::extractor::{decode_cover, load_fallback};
 use crate::library::PlaylistScope;
@@ -54,7 +55,16 @@ pub enum SearchResult {
         track_idx: usize,
     },
 }
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmAction {
+    DeletePlaylist(usize),                // playlist index
+    DeleteSongFromPlaylist(usize, usize), // playlist idx, song idx
+}
 
+pub struct ConfirmDialog {
+    pub message: String,
+    pub action: ConfirmAction,
+}
 pub struct App {
     pub play_context: PlayContext,
     pub playlist_scope: PlaylistScope,
@@ -119,6 +129,11 @@ pub struct App {
     pub cover_width: u16,
     pub cover_height: u16,
     pub player_height: u16,
+    pub confirm_dialog: Option<ConfirmDialog>,
+    // New playlist creation state
+    pub new_playlist_mode: bool,
+    pub new_playlist_name: String,
+    pub music_dir: std::path::PathBuf,
 }
 
 impl App {
@@ -233,6 +248,10 @@ impl App {
             cover_width: config.layout.cover_width,
             cover_height: config.layout.cover_height,
             player_height: config.layout.player_height,
+            confirm_dialog: None,
+            new_playlist_mode: false,
+            new_playlist_name: String::new(),
+            music_dir: music_dir.to_path_buf(),
         })
     }
     pub fn drain_mpris(&mut self) -> Result<()> {
@@ -370,9 +389,131 @@ impl App {
         self.playlist_songs_offset = 0;
     }
 
-    pub fn delete_from_playlist(&mut self) -> Result<()> {
-        if let PlaylistScope::Open(pi) = self.playlist_scope {
-            if let Some(si) = self.playlist_song_selected {
+    // pub fn delete_from_playlist(&mut self) -> Result<()> {
+    //     if let PlaylistScope::Open(pi) = self.playlist_scope {
+    //         if let Some(si) = self.playlist_song_selected {
+    //             self.playlists[pi].remove_track(si);
+    //             self.playlists[pi].save()?;
+    //             let len = self.playlists[pi].track_paths.len();
+    //             self.playlist_song_selected = if len == 0 {
+    //                 None
+    //             } else {
+    //                 Some(si.min(len - 1))
+    //             };
+    //         }
+    //     }
+    //     Ok(())
+    // }
+ 
+    // ── Playlist management ───────────────────────────────────────────────────────
+
+    pub fn start_new_playlist(&mut self) {
+        if self.active_tab == LibraryTab::Playlists {
+            self.new_playlist_mode = true;
+            self.new_playlist_name.clear();
+        }
+    }
+
+    pub fn new_playlist_type_char(&mut self, c: char) {
+        self.new_playlist_name.push(c);
+    }
+
+    pub fn new_playlist_backspace(&mut self) {
+        self.new_playlist_name.pop();
+    }
+
+    pub fn new_playlist_confirm(&mut self) -> Result<()> {
+        let name = self.new_playlist_name.trim().to_string();
+        if name.is_empty() {
+            self.new_playlist_mode = false;
+            return Ok(());
+        }
+
+        // Check for duplicate name
+        if self
+            .playlists
+            .iter()
+            .any(|p| p.name.to_lowercase() == name.to_lowercase())
+        {
+            self.new_playlist_mode = false;
+            return Ok(());
+        }
+
+        let path = self.music_dir.join(format!("{}.m3u", name));
+        let playlist = Playlist::new(name, Some(path));
+        let _ = playlist.save();
+        self.playlists.push(playlist);
+        self.playlist_selected = Some(self.playlists.len() - 1);
+        self.new_playlist_mode = false;
+        self.new_playlist_name.clear();
+        Ok(())
+    }
+
+    pub fn new_playlist_cancel(&mut self) {
+        self.new_playlist_mode = false;
+        self.new_playlist_name.clear();
+    }
+
+    pub fn request_delete_playlist(&mut self) {
+        if self.active_tab != LibraryTab::Playlists {
+            return;
+        }
+        match &self.playlist_scope {
+            PlaylistScope::All => {
+                if let Some(pi) = self.playlist_selected {
+                    // Protect favorites
+                    if self.playlists[pi].name.to_lowercase() == "favorites" {
+                        return;
+                    }
+                    self.confirm_dialog = Some(ConfirmDialog {
+                        message: format!(
+                            "Delete playlist \"{}\"? This cannot be undone.",
+                            self.playlists[pi].name
+                        ),
+                        action: ConfirmAction::DeletePlaylist(pi),
+                    });
+                }
+            }
+            PlaylistScope::Open(pi) => {
+                if let Some(si) = self.playlist_song_selected {
+                    let pi = *pi;
+                    let track_name = self
+                        .playlist_track_indices(pi)
+                        .get(si)
+                        .and_then(|&idx| self.tracks.get(idx))
+                        .map(|t| t.title.clone())
+                        .unwrap_or_else(|| "this song".to_string());
+                    self.confirm_dialog = Some(ConfirmDialog {
+                        message: format!("Remove \"{}\" from playlist?", track_name),
+                        action: ConfirmAction::DeleteSongFromPlaylist(pi, si),
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn confirm_dialog_confirm(&mut self) -> Result<()> {
+        let action = match self.confirm_dialog.take() {
+            Some(d) => d.action,
+            None => return Ok(()),
+        };
+
+        match action {
+            ConfirmAction::DeletePlaylist(pi) => {
+                // Delete the m3u file
+                if let Some(path) = &self.playlists[pi].path {
+                    let _ = std::fs::remove_file(path);
+                }
+                self.playlists.remove(pi);
+                // Fix cursor
+                let len = self.playlists.len();
+                self.playlist_selected = if len == 0 {
+                    None
+                } else {
+                    Some(pi.min(len - 1))
+                };
+            }
+            ConfirmAction::DeleteSongFromPlaylist(pi, si) => {
                 self.playlists[pi].remove_track(si);
                 self.playlists[pi].save()?;
                 let len = self.playlists[pi].track_paths.len();
@@ -386,6 +527,18 @@ impl App {
         Ok(())
     }
 
+    pub fn confirm_dialog_cancel(&mut self) {
+        self.confirm_dialog = None;
+    }
+
+    // ── Layout cycling ────────────────────────────────────────────────────────────
+
+    pub fn set_layout(&mut self, idx: usize) {
+        let layouts = ["default", "compact", "wide", "minimal"];
+        if let Some(&mode) = layouts.get(idx) {
+            self.layout_mode = mode.to_string();
+        }
+    }
     pub fn open_save_mode(&mut self) {
         let track_path = match self.active_tab {
             LibraryTab::Songs => self
@@ -1194,7 +1347,8 @@ impl App {
         self.shuffle_order = indices;
     }
 
-    pub fn enter_search(&mut self) {
+    pub fn 
+    enter_search(&mut self) {
         self.search_mode = true;
         self.search_query.clear();
         self.search_results.clear();

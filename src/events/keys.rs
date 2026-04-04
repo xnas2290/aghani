@@ -24,6 +24,12 @@ pub enum Action {
     GoToPlaying,
     None,
     ToggleRepeat,
+    NewPlaylist,    // 'N' in playlists tab
+    DeletePlaylist, // 'D' in playlists tab
+    ConfirmDialog,  // Enter in confirm overlay
+    CancelDialog,   // Esc in confirm overlay
+    // CycleLayout,    // '1','2','3','4'
+    SetLayout(usize),
 }
 
 use crate::config::KeysConfig;
@@ -52,6 +58,14 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
         k if k == keys.search => Action::OpenSearch,
         k if k == keys.go_to_playing => Action::GoToPlaying,
         k if k == keys.toggle_repeat => Action::ToggleRepeat,
+        k if k == keys.new_playlist => Action::NewPlaylist,
+        k if k == keys.delete_playlist => Action::DeletePlaylist,
+        k if k == keys.exit_scope => Action::CancelDialog,
+        k if k == keys.confirm => Action::ConfirmDialog,
+        k if k == keys.set_layout_1 => Action::SetLayout(0),
+        k if k == keys.set_layout_2 => Action::SetLayout(2),
+        k if k == keys.set_layout_3 => Action::SetLayout(1),
+        k if k == keys.set_layout_4 => Action::SetLayout(3),
 
         _ => Action::None,
     }
@@ -71,6 +85,12 @@ fn key_to_string(event: KeyEvent) -> String {
         KeyCode::Backspace => "Backspace".into(),
         KeyCode::Esc => "Esc".into(),
         KeyCode::F(n) => format!("F{}", n),
+        // KeyCode::Char('N') => 'N'.to_string(),
+        // KeyCode::Char('D') => 'D'.to_string(),
+        // KeyCode::Char('1') => '1'.to_string(),
+        // KeyCode::Char('2') => '2'.to_string(),
+        // KeyCode::Char('3') => '3'.to_string(),
+        // KeyCode::Char('4') => '4'.to_string(),
         _ => String::new(),
     }
 }

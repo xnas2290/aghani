@@ -4,9 +4,16 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::ui::confirm_overlay;
 use crate::ui::{
-    cover_panel, library_panel, player_panel, save_overlay, search_overlay, statusbar,
+    cover_panel,
+    library_panel,
+    player_panel,
+    save_overlay,
+    search_overlay, // statusbar,
 };
+
+// At end of draw(), after search_overlay:
 
 // pub fn draw(f: &mut Frame, app: &mut App) {
 //     let size = f.area();
@@ -59,11 +66,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let root = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Min(0)]) //, Constraint::Length(1)])
         .split(size);
 
     let main = root[0];
-    let status_area = root[1];
+    // let status_area = root[1];
 
     match app.layout_mode.as_str() {
         "minimal" => draw_minimal(f, app, main),
@@ -72,9 +79,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         _ => draw_default(f, app, main),
     }
 
-    statusbar::draw(f, app, status_area);
+    // statusbar::draw(f, app, status_area);
     save_overlay::draw(f, app);
     search_overlay::draw(f, app);
+    confirm_overlay::draw(f, app);
 }
 
 fn draw_default(f: &mut Frame, app: &mut App, area: Rect) {
@@ -106,7 +114,7 @@ fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(app.player_height / 2),
+            Constraint::Length(app.player_height - 5),
         ])
         .split(area);
 
@@ -114,7 +122,7 @@ fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
     app.scoped_list_height = app.list_height.saturating_sub(1);
 
     if app.show_player {
-        player_panel::draw(f, app, rows[1]);
+        player_panel::draw_compact(f, app, rows[1]);
     }
     library_panel::draw(f, app, rows[0]);
 }
