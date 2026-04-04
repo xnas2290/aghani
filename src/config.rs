@@ -21,6 +21,7 @@ pub fn state_path() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)] 
 pub struct KeysConfig {
     pub quit: String,
     pub play_pause: String,
@@ -42,6 +43,7 @@ pub struct KeysConfig {
     pub shuffle: String,
     pub search: String,
     pub go_to_playing: String,
+    pub toggle_repeat: String,
 }
 
 impl Default for KeysConfig {
@@ -67,6 +69,7 @@ impl Default for KeysConfig {
             shuffle: "r".into(),
             search: "/".into(),
             go_to_playing: "g".into(),
+            toggle_repeat: "R".into(),
         }
     }
 }

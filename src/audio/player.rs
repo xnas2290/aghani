@@ -1,11 +1,10 @@
+use anyhow::{Context, Result};
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-use anyhow::{Context, Result};
-use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
 pub struct Player {
     _stream: OutputStream,
@@ -41,7 +40,6 @@ impl Player {
     }
 
     fn play_from(&mut self, path: &Path, offset: Duration) -> Result<()> {
-        // Kill old process and stop sink cleanly
         self.kill_child();
         self.sink.stop();
 
@@ -78,7 +76,6 @@ impl Player {
             sample_pos: 0,
         };
 
-        // Rebuild sink fresh every time
         self.sink = Sink::try_new(&self._handle)?;
         self.sink.set_volume(self.volume);
         self.sink.append(source);
@@ -93,7 +90,7 @@ impl Player {
         if let Some(child) = self.current_child.take() {
             if let Ok(mut c) = child.lock() {
                 let _ = c.kill();
-                let _ = c.wait(); // reap zombie
+                let _ = c.wait();
             }
         }
     }
@@ -168,14 +165,11 @@ impl Iterator for FfmpegSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        // Refill when buffer is exhausted
         if self.sample_pos >= self.sample_buf.len() {
-            // Read a large chunk of raw bytes (4 bytes per f32 sample)
-            let mut bytes = vec![0u8; 8192 * 4]; // 8192 samples at a time
+            let mut bytes = vec![0u8; 8192 * 4];
             match self.reader.read(&mut bytes) {
                 Ok(0) | Err(_) => return None,
                 Ok(n) => {
-                    // Convert raw bytes to f32 samples
                     self.sample_buf = bytes[..n]
                         .chunks_exact(4)
                         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))

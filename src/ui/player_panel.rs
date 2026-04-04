@@ -1,3 +1,6 @@
+use crate::app::App;
+use crate::app::RepeatMode;
+use crate::ui::theme::Theme;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -5,20 +8,20 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
 };
-
-use crate::app::App;
-use crate::ui::theme::Theme;
-
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(Span::styled(" ♪ Now Playing ", Theme::title()))
+        .title(Span::styled("  Now Playing ", Theme::title()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Theme::border_active());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
-
+    let repeat_span = match app.repeat {
+        RepeatMode::Off => Span::styled(" ", Theme::dim()),
+        RepeatMode::All => Span::styled(" ", Theme::accent()),
+        RepeatMode::One => Span::styled("1 ", Theme::accent().add_modifier(Modifier::BOLD)),
+    };
     // ── Root Layout Calculation ───────────────────────────────────────
     // Content is 9 lines high. Min(0) constraints act as spacers for Y-centering.
     let root_layout = Layout::default()
@@ -38,10 +41,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // 3: Spacer
             Constraint::Length(1), // 0: Title
             Constraint::Length(1), // 1: Artist
             Constraint::Length(1), // 2: Album
-            Constraint::Length(1), // 3: Spacer
             Constraint::Length(1), // 4: Type
             Constraint::Length(1), // 5: Bitrate
             Constraint::Length(1), // 6: Sample Rate
@@ -61,7 +64,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     if let Some(track) = app.current_track() {
         let max_w = inner.width.saturating_sub(12) as usize;
-
+        // f.render_widget(
+        //     Paragraph::new(Line::from(vec![Span::styled(
+        //         app.current_index.map(|i| i + 1).unwrap_or(0).to_string(),
+        //         Theme::dim(),
+        //     )])),
+        //     rows[0],
+        // );
         // ── Metadata ──────────────────────────────────────────────────
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -141,25 +150,27 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
         // ── Status Row (Playback, Shuffle, Volume) ────────────────────
         let play_icon = if app.player.is_paused() {
-            "⏸ PAUSED "
+            " PAUSED "
         } else {
-            "▶ PLAYING"
+            " PLAYING"
         };
-        let vol_pct = (app.player.volume * 100.0) as u32;
 
-        let shuffle_style = if app.shuffle {
-            Theme::accent().add_modifier(Modifier::BOLD)
-        } else {
-            Theme::dim()
-        };
+        let vol_pct = (app.player.volume * 100.0) as u32;
 
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(format!("  {} ", play_icon), Theme::accent()),
+                repeat_span, // ← add this
+                if app.shuffle {
+                    Span::styled("    ", Theme::accent())
+
+                    // Theme::accent().add_modifier(Modifier::BOLD)
+                } else {
+                    // Theme::dim()
+                    Span::styled("    ", Theme::dim())
+                },
                 // Span::styled("│ ", Theme::dim()),
-                Span::styled("[r]    ", shuffle_style),
-                // Span::styled("│ ", Theme::dim()),
-                Span::styled("V ", Theme::dim()),
+                Span::styled("  ", Theme::dim()),
                 Span::styled(make_progress_bar(vol_pct, 10), Theme::progress_filled()),
                 Span::styled(format!(" {}%", vol_pct), Theme::dim()),
             ])),

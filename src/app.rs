@@ -1,5 +1,6 @@
 use crate::audio::metadata::enrich_track;
 use crate::audio::player::Player;
+// use crate::audio::player::PlayerCommand;
 use crate::cover::extractor::{decode_cover, load_fallback};
 use crate::library::PlaylistScope;
 use crate::library::playlist::Playlist;
@@ -11,6 +12,30 @@ use image::DynamicImage;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::Receiver;
+#[derive(Debug, Clone, PartialEq)]
+pub enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    pub fn next(&self) -> Self {
+        match self {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Off,
+        }
+    }
+
+    // pub fn icon(&self) -> &'static str {
+    //     match self {
+    //         RepeatMode::Off => "  ",
+    //         RepeatMode::All => "🔁",
+    //         RepeatMode::One => "🔂",
+    //     }
+    // }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayContext {
     AllTracks,
@@ -81,6 +106,8 @@ pub struct App {
     pub scoped_list_height: usize,
     pub search_list_height: usize,
     pub keys: crate::config::KeysConfig,
+    pub ipc_rx: Option<std::sync::mpsc::Receiver<crate::ipc::IpcCommand>>,
+    pub repeat: RepeatMode,
 }
 
 impl App {
@@ -88,6 +115,7 @@ impl App {
         music_dir: &Path,
         metadata_rx: Receiver<(usize, Track, Option<Vec<u8>>)>,
         config: &crate::config::Config,
+        // cmd_rx: Receiver<PlayerCommand>,
     ) -> Result<Self> {
         let mut player = Player::new()?;
 
@@ -125,13 +153,6 @@ impl App {
 
         let all_track_indices = (0..tracks.len()).collect();
         let scoped_track_indices = (0..tracks.len()).collect();
-        // Apply startup tab preference
-        // let active_tab = match config.startup.tab.as_deref() {
-        //     Some("Albums") => LibraryTab::Albums,
-        //     Some("Artists") => LibraryTab::Artists,
-        //     Some("Playlists") => LibraryTab::Playlists,
-        //     _ => LibraryTab::Songs,
-        // };
 
         // Apply startup volume
         let volume = config.startup.volume.unwrap_or(1.0).clamp(0.0, 2.0);
@@ -189,41 +210,13 @@ impl App {
             scoped_list_height: 19,
             search_list_height: 10,
             keys: config.keys.clone(),
+            ipc_rx: None,
+            repeat: RepeatMode::Off,
         })
     }
-    // Restore last session if available
-    // (done after drain_metadata fills track data, so we store path and resolve later)
-    // pub fn restore_session(&mut self, config: &crate::config::Config) -> Result<()> {
-    //     // Restore tab
-    //     if let Some(tab) = &config.session.last_tab {
-    //         self.active_tab = match tab.as_str() {
-    //             "Albums" => LibraryTab::Albums,
-    //             "Artists" => LibraryTab::Artists,
-    //             "Playlists" => LibraryTab::Playlists,
-    //             _ => LibraryTab::Songs,
-    //         };
-    //     }
-
-    //     // Restore last track + position
-    //     if let Some(last_path) = &config.session.last_track {
-    //         if let Some(idx) = self.tracks.iter().position(|t| &t.path == last_path) {
-    //             let position = config.session.last_position.unwrap_or(0.0);
-    //             self.current_index = Some(idx);
-    //             self.selected_index = Some(idx);
-    //             self.songs_offset = scroll_offset(Some(idx), 0, self.list_height);
-
-    //             // Resume from last position
-    //             let path = self.tracks[idx].path.clone();
-    //             self.player
-    //                 .seek(&path, std::time::Duration::from_secs_f64(position))?;
-    //             self.player.pause(); // start paused, user can resume
-    //             self.refresh_cover(idx)?;
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
-
+    pub fn toggle_repeat(&mut self) {
+        self.repeat = self.repeat.next();
+    }
     pub fn restore_session_from_state(&mut self, state: &crate::config::State) -> Result<()> {
         // 1. Restore the active tab
         if let Some(tab) = &state.last_tab {
@@ -352,6 +345,116 @@ impl App {
         self.save_mode = false;
     }
 
+    pub fn drain_ipc(&mut self) -> anyhow::Result<()> {
+        use crate::ipc::IpcCommand;
+
+        // Collect all pending commands first — releases the borrow on ipc_rx
+        let commands: Vec<IpcCommand> = match &self.ipc_rx {
+            Some(rx) => {
+                let mut cmds = Vec::new();
+                loop {
+                    match rx.try_recv() {
+                        Ok(cmd) => cmds.push(cmd),
+                        Err(_) => break,
+                    }
+                }
+                cmds
+            }
+            None => return Ok(()),
+        };
+
+        // Now process — no borrow conflict
+        for cmd in commands {
+            match cmd {
+                IpcCommand::Play => {
+                    if self.player.is_paused() {
+                        self.player.resume();
+                    }
+                }
+                IpcCommand::Pause => {
+                    if !self.player.is_paused() {
+                        self.player.pause();
+                    }
+                }
+                IpcCommand::TogglePlay => self.toggle_play()?,
+                IpcCommand::Next => self.next_track()?,
+                IpcCommand::Prev => self.prev_track()?,
+                IpcCommand::VolumeUp => self.volume_up(),
+                IpcCommand::VolumeDown => self.volume_down(),
+                IpcCommand::Status => {
+                    let info = self.current_track().map(|t| {
+                        (
+                            t.title.clone(),
+                            t.artist.clone(),
+                            t.album.clone(),
+                            t.duration_str(),
+                            t.bitrate,
+                            t.sample_rate,
+                            t.extension(),
+                        )
+                    });
+                    if let Some((title, artist, album, duration, bitrate, sample_rate, ext)) = info
+                    {
+                        let elapsed = self.player.elapsed();
+                        let elapsed_str = format!(
+                            "{:02}:{:02}",
+                            elapsed.as_secs() / 60,
+                            elapsed.as_secs() % 60
+                        );
+                        let paused = self.player.is_paused();
+                        let vol = (self.player.volume * 100.0) as u32;
+
+                        let json = format!(
+                            r#"{{
+  "title": "{}",
+  "artist": "{}",
+  "album": "{}",
+  "duration": "{}",
+  "elapsed": "{}",
+  "elapsed_secs": {},
+  "status": "{}",
+  "volume": {},
+  "bitrate": {},
+  "sample_rate": {},
+  "format": "{}",
+  "shuffle": {}
+}}"#,
+                            title.replace('"', "\\\""),
+                            artist.replace('"', "\\\""),
+                            album.replace('"', "\\\""),
+                            duration,
+                            elapsed_str,
+                            elapsed.as_secs(),
+                            if paused { "paused" } else { "playing" },
+                            vol,
+                            bitrate.map(|b| b.to_string()).unwrap_or("null".into()),
+                            sample_rate.map(|s| s.to_string()).unwrap_or("null".into()),
+                            ext,
+                            self.shuffle,
+                        );
+
+                        let _ = std::fs::write("/tmp/aghani-status.json", &json);
+
+                        // Also write a simple one-liner for i3blocks
+                        let oneliner = format!(
+                            "{} {} — {} [{}] {}",
+                            if paused { "⏸" } else { "▶" },
+                            title,
+                            artist,
+                            elapsed_str,
+                            if self.shuffle { "🔀" } else { "" }
+                        );
+                        let _ = std::fs::write("/tmp/aghani-status", oneliner);
+                    } else {
+                        let _ =
+                            std::fs::write("/tmp/aghani-status.json", r#"{"status":"stopped"}"#);
+                        let _ = std::fs::write("/tmp/aghani-status", "⏹ Not playing");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn drain_metadata(&mut self) {
         let mut changed = false;
         let mut count = 0;
@@ -598,8 +701,34 @@ impl App {
 
     pub fn tick(&mut self) -> Result<()> {
         self.drain_metadata();
+        self.drain_ipc()?;
+
         if self.current_index.is_some() && self.player.is_finished() {
-            self.next_track()?;
+            match self.repeat {
+                RepeatMode::One => {
+                    // Replay same track
+                    if let Some(idx) = self.current_index {
+                        let path = self.tracks[idx].path.clone();
+                        self.player.play(&path)?;
+                    }
+                }
+                RepeatMode::Off => {
+                    // Stop at end of list
+                    let indices = self.current_play_indices();
+                    if let Some(ci) = self.current_index {
+                        let pos = indices.iter().position(|&i| i == ci).unwrap_or(0);
+                        if pos + 1 < indices.len() {
+                            self.next_track()?;
+                        } else {
+                            self.next_track()?;
+                            self.player.pause();
+                        }
+                    }
+                }
+                RepeatMode::All => {
+                    self.next_track()?; // already wraps around
+                }
+            }
         }
         Ok(())
     }
@@ -1111,35 +1240,60 @@ impl App {
         }
         Ok(())
     }
-
     pub fn go_to_playing(&mut self) {
         let ci = match self.current_index {
             Some(i) => i,
             None => return,
         };
 
+        // Helper logic to calculate the new offset
+        let get_new_offset =
+            |current_offset: usize, target: usize, height: usize, total: usize| -> usize {
+                // 1. If the item is already visible, don't move the scroll at all
+                if target >= current_offset && target < current_offset + height {
+                    return current_offset;
+                }
+
+                // 2. Calculate the ideal centered offset
+                let ideal_offset = target.saturating_sub(height / 2);
+
+                // 3. Clamp the offset so we don't show empty space at the bottom
+                // The maximum the top index can be is (total_items - height)
+                let max_offset = total.saturating_sub(height);
+
+                ideal_offset.min(max_offset)
+            };
+
         match &self.play_context.clone() {
             PlayContext::AllTracks => {
                 self.active_tab = LibraryTab::Songs;
                 self.selected_index = Some(ci);
-                self.songs_offset = scroll_offset(Some(ci), 0, self.list_height);
+                self.songs_offset =
+                    get_new_offset(self.songs_offset, ci, self.list_height, self.tracks.len());
             }
             PlayContext::Album => {
                 self.active_tab = LibraryTab::Albums;
-                // Make sure album scope is open to the right album
                 if let LibraryScope::Album(_) = &self.album_scope {
-                    // already in correct scope — find position within scoped list
                     if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
                         self.scoped_song_selected = Some(pos);
-                        self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+                        self.scoped_songs_offset = get_new_offset(
+                            self.scoped_songs_offset,
+                            pos,
+                            self.list_height,
+                            self.scoped_track_indices.len(),
+                        );
                     }
                 } else {
-                    // scope was cleared — reopen the album from the track's metadata
                     let album = self.tracks[ci].album.clone();
                     self.enter_album(album);
                     if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
                         self.scoped_song_selected = Some(pos);
-                        self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+                        self.scoped_songs_offset = get_new_offset(
+                            0, // Default to 0 since scope just opened
+                            pos,
+                            self.list_height,
+                            self.scoped_track_indices.len(),
+                        );
                     }
                 }
             }
@@ -1148,15 +1302,120 @@ impl App {
                 self.active_tab = LibraryTab::Playlists;
                 self.playlist_scope = PlaylistScope::Open(pi);
                 self.playlist_selected = Some(pi);
-                // Find position within playlist
+
                 let indices = self.playlist_track_indices(pi);
                 if let Some(pos) = indices.iter().position(|&i| i == ci) {
                     self.playlist_song_selected = Some(pos);
-                    self.playlist_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+                    self.playlist_songs_offset = get_new_offset(
+                        self.playlist_songs_offset,
+                        pos,
+                        self.list_height,
+                        indices.len(),
+                    );
                 }
             }
         }
     }
+    // pub fn go_to_playing(&mut self) {
+    //     let ci = match self.current_index {
+    //         Some(i) => i,
+    //         None => return,
+    //     };
+
+    //     // Helper to calculate an offset that centers the index
+    //     let calculate_center_offset = |index: usize, height: usize| -> usize {
+    //         if index > height / 2 {
+    //             index - (height / 2)
+    //         } else {
+    //             0
+    //         }
+    //     };
+
+    //     match &self.play_context.clone() {
+    //         PlayContext::AllTracks => {
+    //             self.active_tab = LibraryTab::Songs;
+    //             self.selected_index = Some(ci);
+    //             // Center the track
+    //             self.songs_offset = calculate_center_offset(ci, self.list_height);
+    //         }
+    //         PlayContext::Album => {
+    //             self.active_tab = LibraryTab::Albums;
+    //             if let LibraryScope::Album(_) = &self.album_scope {
+    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
+    //                     self.scoped_song_selected = Some(pos);
+    //                     // Center the track within the album view
+    //                     self.scoped_songs_offset = calculate_center_offset(pos, self.list_height);
+    //                 }
+    //             } else {
+    //                 let album = self.tracks[ci].album.clone();
+    //                 self.enter_album(album);
+    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
+    //                     self.scoped_song_selected = Some(pos);
+    //                     self.scoped_songs_offset = calculate_center_offset(pos, self.list_height);
+    //                 }
+    //             }
+    //         }
+    //         PlayContext::Playlist(pi) => {
+    //             let pi = *pi;
+    //             self.active_tab = LibraryTab::Playlists;
+    //             self.playlist_scope = PlaylistScope::Open(pi);
+    //             self.playlist_selected = Some(pi);
+
+    //             let indices = self.playlist_track_indices(pi);
+    //             if let Some(pos) = indices.iter().position(|&i| i == ci) {
+    //                 self.playlist_song_selected = Some(pos);
+    //                 // Center the track within the playlist view
+    //                 self.playlist_songs_offset = calculate_center_offset(pos, self.list_height);
+    //             }
+    //         }
+    //     }
+    // }
+
+    // pub fn go_to_playing(&mut self) {
+    //     let ci = match self.current_index {
+    //         Some(i) => i,
+    //         None => return,
+    //     };
+
+    //     match &self.play_context.clone() {
+    //         PlayContext::AllTracks => {
+    //             self.active_tab = LibraryTab::Songs;
+    //             self.selected_index = Some(ci);
+    //             self.songs_offset = scroll_offset(Some(ci), 0, self.list_height);
+    //         }
+    //         PlayContext::Album => {
+    //             self.active_tab = LibraryTab::Albums;
+    //             // Make sure album scope is open to the right album
+    //             if let LibraryScope::Album(_) = &self.album_scope {
+    //                 // already in correct scope — find position within scoped list
+    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
+    //                     self.scoped_song_selected = Some(pos);
+    //                     self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+    //                 }
+    //             } else {
+    //                 // scope was cleared — reopen the album from the track's metadata
+    //                 let album = self.tracks[ci].album.clone();
+    //                 self.enter_album(album);
+    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
+    //                     self.scoped_song_selected = Some(pos);
+    //                     self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+    //                 }
+    //             }
+    //         }
+    //         PlayContext::Playlist(pi) => {
+    //             let pi = *pi;
+    //             self.active_tab = LibraryTab::Playlists;
+    //             self.playlist_scope = PlaylistScope::Open(pi);
+    //             self.playlist_selected = Some(pi);
+    //             // Find position within playlist
+    //             let indices = self.playlist_track_indices(pi);
+    //             if let Some(pos) = indices.iter().position(|&i| i == ci) {
+    //                 self.playlist_song_selected = Some(pos);
+    //                 self.playlist_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 pub fn scroll_offset(

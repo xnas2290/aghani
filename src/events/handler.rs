@@ -64,6 +64,7 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 Action::ToggleShuffle => app.toggle_shuffle(),
                 Action::OpenSearch => app.enter_search(),
                 Action::GoToPlaying => app.go_to_playing(),
+                Action::ToggleRepeat => app.toggle_repeat(),
                 Action::None => {}
             }
         }

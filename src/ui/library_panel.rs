@@ -73,11 +73,16 @@ fn status_text(app: &App) -> String {
         LibraryTab::Songs => {
             if let Some(current) = app.current_index {
                 if let Some(pos) = app.all_track_indices.iter().position(|&i| i == current) {
-                    return format!("{}/{}", pos + 1, app.all_track_indices.len());
+                    return format!(
+                        "{}  {}/{}",
+                        pos + 1,
+                        app.selected_index.map(|i| i + 1).unwrap_or(0),
+                        app.all_track_indices.len()
+                    );
                 }
             }
             format!("0/{}", app.all_track_indices.len())
-        }
+        }       
 
         LibraryTab::Albums => match &app.album_scope {
             LibraryScope::Album(_) => {

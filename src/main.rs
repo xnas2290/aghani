@@ -4,24 +4,25 @@ mod config;
 mod cover;
 mod error;
 mod events;
+mod ipc;
 mod library;
 mod ui;
 
 use anyhow::Result;
+use app::App;
+use config::{Config, State};
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use events::handler::handle_events;
+use library::cache::MetadataCache;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{env, io};
 
-use app::App;
-use config::{Config, State};
-use events::handler::handle_events;
-use library::cache::MetadataCache;
-
 fn main() -> Result<()> {
+    // Redirect stderr so ALSA/ffmpeg noise doesn't bleed into TUI
     if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
         use std::os::unix::io::IntoRawFd;
         unsafe {
@@ -29,13 +30,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // 1. Load User Config (Static)
     let config = Config::load()?;
-
-    // 2. Load App State (Volatile session info)
     let mut state = State::load();
 
-    // Determine music dir (CLI > Config)
     let music_dir = env::args()
         .nth(1)
         .map(std::path::PathBuf::from)
@@ -55,13 +52,18 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // App Init
+    // Metadata channel
     let cache_path = music_dir.join(".aghani-cache.json");
     let cache = Arc::new(Mutex::new(MetadataCache::load(&cache_path)));
-    let (tx, rx) = mpsc::channel();
+    let (meta_tx, meta_rx) = mpsc::channel();
 
-    // Note: You might need to adjust App::new to take &Config and &State if it uses them
-    let mut app = App::new(&music_dir, rx, &config)?;
+    // IPC channel
+    let (ipc_tx, ipc_rx) = mpsc::channel::<ipc::IpcCommand>();
+    ipc::server::start_ipc(ipc_tx);
+
+    // Create app
+    let mut app = App::new(&music_dir, meta_rx, &config)?;
+    app.ipc_rx = Some(ipc_rx);
 
     // Background metadata loader
     let tracks_paths: Vec<_> = app.tracks.iter().map(|t| t.path.clone()).collect();
@@ -88,7 +90,7 @@ fn main() -> Result<()> {
                     dirty = true;
                 }
             }
-            if tx.send((i, track, None::<Vec<u8>>)).is_err() {
+            if meta_tx.send((i, track, None::<Vec<u8>>)).is_err() {
                 break;
             }
         }
@@ -97,10 +99,13 @@ fn main() -> Result<()> {
         }
     });
 
-    // Run app loop
     let result = run_loop(&mut terminal, &mut app, &config, &state);
-
-    // 3. Save State (and ONLY state) on exit
+    //clear icp socket on exit
+    // Clear IPC status files on clean exit
+    let _ = std::fs::write("/tmp/aghani-status", "");
+    let _ = std::fs::write("/tmp/aghani-status.json", r#"{"status":"stopped"}"#);
+    let _ = std::fs::remove_file(ipc::server::SOCKET_PATH);
+    // Save session on exit
     state.last_track = app.current_track().map(|t| t.path.clone());
     state.last_position = if state.last_track.is_some() {
         Some(app.player.elapsed().as_secs_f64())
@@ -110,7 +115,9 @@ fn main() -> Result<()> {
     state.last_tab = Some(format!("{:?}", app.active_tab));
     let _ = state.save();
 
-    // Clean up
+    // Cleanup IPC socket
+    let _ = std::fs::remove_file(ipc::server::SOCKET_PATH);
+
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -130,10 +137,9 @@ fn run_loop(
     state: &State,
 ) -> Result<()> {
     let mut was_overlay = false;
+
     std::thread::sleep(std::time::Duration::from_millis(100));
     app.drain_metadata();
-
-    // Restore using the state object
     let _ = app.restore_session_from_state(state);
 
     loop {

@@ -28,3 +28,6 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 libc = "0.2.184"
 toml = "1.1.2"
+mpris-server = "0.8"
+tokio = { version = "1", features = ["full"] }
+zvariant = "4.0"
