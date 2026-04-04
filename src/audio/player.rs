@@ -14,6 +14,7 @@ pub struct Player {
     pub volume: f32,
     started_at: Option<Instant>,
     paused_elapsed: Duration,
+    current_gain: Option<f32>,
 }
 
 impl Player {
@@ -28,20 +29,38 @@ impl Player {
             volume: 1.0,
             started_at: None,
             paused_elapsed: Duration::ZERO,
+            current_gain: None,
         })
     }
 
     pub fn play(&mut self, path: &Path) -> Result<()> {
-        self.play_from(path, Duration::ZERO)
+        self.play_from(path, Duration::ZERO, None)
+    }
+
+    pub fn play_with_gain(&mut self, path: &Path, gain_db: Option<f32>) -> Result<()> {
+        self.play_from(path, Duration::ZERO, gain_db)
     }
 
     pub fn seek(&mut self, path: &Path, to: Duration) -> Result<()> {
-        self.play_from(path, to)
+        self.play_from(path, to, self.current_gain)
     }
 
-    fn play_from(&mut self, path: &Path, offset: Duration) -> Result<()> {
+    fn play_from(&mut self, path: &Path, offset: Duration, gain_db: Option<f32>) -> Result<()> {
         self.kill_child();
         self.sink.stop();
+        self.current_gain = gain_db;
+
+        // Convert dB gain to ffmpeg volume filter
+        // ReplayGain formula: linear = 10^(dB/20) * preamp
+        // We use 89dB reference (standard ReplayGain preamp)
+        let volume_arg = if let Some(db) = gain_db {
+            let linear = 10f32.powf((db + 89.0 - 89.0) / 20.0);
+            // Clamp to prevent clipping
+            let clamped = linear.clamp(0.0, 4.0);
+            format!("{:.6}", clamped)
+        } else {
+            "1.0".to_string()
+        };
 
         let mut child = Command::new("ffmpeg")
             .args([
@@ -49,6 +68,8 @@ impl Player {
                 &format!("{:.3}", offset.as_secs_f64()),
                 "-i",
                 path.to_str().context("invalid path")?,
+                "-af",
+                &format!("volume={}", volume_arg),
                 "-f",
                 "f32le",
                 "-ar",
@@ -63,7 +84,7 @@ impl Player {
             .stderr(Stdio::null())
             .stdin(Stdio::null())
             .spawn()
-            .context("ffmpeg not found — please install ffmpeg")?;
+            .context("ffmpeg not found")?;
 
         let stdout = child.stdout.take().context("no stdout")?;
         let child_arc = Arc::new(Mutex::new(child));

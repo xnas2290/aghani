@@ -19,61 +19,10 @@ pub struct Track {
     pub bitrate: Option<u32>,     // approximate kbps
     pub sample_rate: Option<u32>, // Hz
     pub channels: Option<u8>,     // number of audio channels
+    pub replaygain: Option<f32>,  // in dB, positive or negative
 }
 
 impl Track {
-    // pub fn from_path(path: PathBuf) -> Self {
-    //     let mut track = Self::new(path.clone());
-
-    //     // open file
-    //     if let Ok(file) = File::open(&path) {
-    //         let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    //         let mut hint = Hint::new();
-    //         if let Some(ext) = path.extension() {
-    //             hint.with_extension(&ext.to_string_lossy());
-    //         }
-
-    //         if let Ok(probed) = get_probe().format(
-    //             &hint,
-    //             mss,
-    //             &FormatOptions::default(),
-    //             &MetadataOptions::default(),
-    //         ) {
-    //             let format = probed.format;
-
-    //             if let Some(t) = format
-    //                 .tracks()
-    //                 .iter()
-    //                 .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-    //             {
-    //                 let params = &t.codec_params;
-
-    //                 // sample rate
-    //                 track.sample_rate = params.sample_rate;
-
-    //                 // duration from frames + sample rate
-    //                 if let (Some(frames), Some(rate)) = (params.n_frames, params.sample_rate) {
-    //                     let secs = frames as f64 / rate as f64;
-    //                     track.duration = Duration::from_secs_f64(secs);
-    //                 }
-
-    //                 // approximate bitrate
-    //                 if let Ok(md) = std::fs::metadata(&path) {
-    //                     let size_bits = md.len() * 8;
-    //                     if track.duration.as_secs() > 0 {
-    //                         let approx =
-    //                             (size_bits as f64 / track.duration.as_secs() as f64) / 1000.0;
-    //                         track.bitrate = Some(approx as u32);
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     track
-    // }
-
     pub fn new(path: PathBuf) -> Self {
         let title = path
             .file_stem()
@@ -91,6 +40,7 @@ impl Track {
             bitrate: None,
             sample_rate: None,
             channels: None,
+            replaygain: None,
         }
     }
 

@@ -18,6 +18,7 @@ pub struct CachedTrack {
     pub sample_rate: Option<u32>,
     pub channels: Option<u8>,
     pub modified: u64, // file mtime as secs since epoch
+    pub replaygain: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -61,6 +62,7 @@ impl MetadataCache {
             sample_rate: track.sample_rate,
             channels: track.channels,
             modified,
+            replaygain: track.replaygain,
         });
     }
 }

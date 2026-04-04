@@ -11,6 +11,7 @@ use anyhow::Result;
 use image::DynamicImage;
 use std::collections::HashMap;
 use std::path::Path;
+// use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepeatMode {
@@ -108,6 +109,8 @@ pub struct App {
     pub keys: crate::config::KeysConfig,
     pub ipc_rx: Option<std::sync::mpsc::Receiver<crate::ipc::IpcCommand>>,
     pub repeat: RepeatMode,
+    pub mpris_rx: Option<std::sync::mpsc::Receiver<crate::mpris::MprisCommand>>,
+    pub mpris_update_tx: Option<std::sync::mpsc::SyncSender<crate::mpris::MprisUpdate>>,
 }
 
 impl App {
@@ -212,12 +215,93 @@ impl App {
             keys: config.keys.clone(),
             ipc_rx: None,
             repeat: RepeatMode::Off,
+            mpris_rx: None,
+            // mpris_player: None,
+            mpris_update_tx: None,
         })
+    }
+    pub fn drain_mpris(&mut self) -> Result<()> {
+        use crate::mpris::MprisCommand;
+
+        let commands: Vec<MprisCommand> = match &self.mpris_rx {
+            Some(rx) => {
+                let mut cmds = Vec::new();
+                while let Ok(cmd) = rx.try_recv() {
+                    cmds.push(cmd);
+                }
+                cmds
+            }
+            None => return Ok(()),
+        };
+
+        for cmd in commands {
+            match cmd {
+                MprisCommand::Play => {
+                    if self.player.is_paused() {
+                        self.player.resume();
+                    }
+                }
+                MprisCommand::Pause => {
+                    if !self.player.is_paused() {
+                        self.player.pause();
+                    }
+                }
+                MprisCommand::PlayPause => self.toggle_play()?,
+                MprisCommand::Next => self.next_track()?,
+                MprisCommand::Prev => self.prev_track()?,
+                MprisCommand::Stop => self.player.stop(),
+                MprisCommand::Seek(us) => {
+                    let pos = std::time::Duration::from_micros(us.max(0) as u64);
+                    if let Some(track) = self.current_track() {
+                        let path = track.path.clone();
+                        self.player.seek(&path, pos)?;
+                    }
+                }
+                MprisCommand::SetVolume(v) => self.set_volume(v as f32),
+            }
+        }
+
+        // Update shared MPRIS state so clients see current info
+        self.update_mpris_state();
+        Ok(())
+    }
+
+    fn update_mpris_state(&self) {
+        use crate::mpris::MprisUpdate;
+
+        let tx = match &self.mpris_update_tx {
+            Some(t) => t,
+            None => return,
+        };
+
+        let upd = if let Some(track) = self.current_track() {
+            MprisUpdate {
+                title: track.title.clone(),
+                artist: track.artist.clone(),
+                album: track.album.clone(),
+                duration_us: track.duration.as_micros() as i64,
+                position_us: self.player.elapsed().as_micros() as i64,
+                playing: !self.player.is_paused(),
+                volume: self.player.volume as f64,
+                shuffle: self.shuffle,
+            }
+        } else {
+            MprisUpdate::default() // stopped state
+        };
+
+        let _ = tx.try_send(upd);
+    }
+
+    pub fn set_volume(&mut self, vol: f32) {
+        self.player.set_volume(vol);
     }
     pub fn toggle_repeat(&mut self) {
         self.repeat = self.repeat.next();
     }
     pub fn restore_session_from_state(&mut self, state: &crate::config::State) -> Result<()> {
+        if let Some(vol) = state.volume {
+            self.player.set_volume(vol);
+        }
         // 1. Restore the active tab
         if let Some(tab) = &state.last_tab {
             self.active_tab = match tab.as_str() {
@@ -578,8 +662,10 @@ impl App {
         }
         self.current_index = Some(index);
         let path = self.tracks[index].path.clone();
-        self.player.play(&path)?;
+        let gain = self.tracks[index].replaygain;
+        self.player.play_with_gain(&path, gain)?;
         self.refresh_cover(index)?;
+        self.update_mpris_state();
         Ok(())
     }
 
@@ -702,7 +788,8 @@ impl App {
     pub fn tick(&mut self) -> Result<()> {
         self.drain_metadata();
         self.drain_ipc()?;
-
+        self.drain_mpris()?; // ← add this
+        self.update_mpris_state(); // keep position in sync
         if self.current_index.is_some() && self.player.is_finished() {
             match self.repeat {
                 RepeatMode::One => {
