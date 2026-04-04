@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         // .title(Span::styled(" 🖼  Cover ", Theme::title()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Theme::border());
+        .border_style(Theme::accent());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -22,7 +22,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(ref mut proto) = app.cover_image {
         f.render_stateful_widget(StatefulImage::new(), inner, proto);
     } else {
-        let no_cover = Paragraph::new(Span::styled("  No cover art", Theme::dim()));
+        let no_cover = Paragraph::new(Span::styled("  No cover art", Theme::accent()));
         f.render_widget(no_cover, inner);
     }
 }

@@ -21,7 +21,7 @@ pub fn state_path() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)] 
+#[serde(default)]
 pub struct KeysConfig {
     pub quit: String,
     pub play_pause: String,
@@ -85,6 +85,8 @@ pub struct ColorsConfig {
     pub border: String,
     pub border_active: String,
     pub progress: String,
+    pub dynamic_theme: bool,         // extract colors from album art
+    pub dynamic_theme_style: String, // "vibrant", "muted", "dark", "light"
 }
 
 impl Default for ColorsConfig {
@@ -99,6 +101,36 @@ impl Default for ColorsConfig {
             border: "DarkGray".into(),
             border_active: "Cyan".into(),
             progress: "Cyan".into(),
+            dynamic_theme: false,
+            dynamic_theme_style: "vibrant".into(),
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutConfig {
+    /// Show cover art panel: true/false
+    pub show_cover: bool,
+    /// Show player panel: true/false  
+    pub show_player: bool,
+    /// Cover panel width (columns)
+    pub cover_width: u16,
+    /// Cover panel height (rows)
+    pub cover_height: u16,
+    /// Player panel height (rows)
+    pub player_height: u16,
+    /// Layout mode: "default", "compact", "wide", "minimal"
+    pub mode: String,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        LayoutConfig {
+            show_cover: true,
+            show_player: true,
+            cover_width: 40,
+            cover_height: 22,
+            player_height: 12,
+            mode: "default".into(),
         }
     }
 }
@@ -115,6 +147,7 @@ pub struct Config {
     pub keys: KeysConfig,
     pub colors: ColorsConfig,
     pub startup: StartupConfig,
+    pub layout: LayoutConfig,
 }
 
 impl Default for Config {
@@ -126,6 +159,7 @@ impl Default for Config {
             keys: KeysConfig::default(),
             colors: ColorsConfig::default(),
             startup: StartupConfig::default(),
+            layout: LayoutConfig::default(),
         }
     }
 }

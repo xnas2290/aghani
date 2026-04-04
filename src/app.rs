@@ -111,6 +111,14 @@ pub struct App {
     pub repeat: RepeatMode,
     pub mpris_rx: Option<std::sync::mpsc::Receiver<crate::mpris::MprisCommand>>,
     pub mpris_update_tx: Option<std::sync::mpsc::SyncSender<crate::mpris::MprisUpdate>>,
+    pub dynamic_theme: bool,
+    pub dynamic_theme_style: String,
+    pub layout_mode: String,
+    pub show_cover: bool,
+    pub show_player: bool,
+    pub cover_width: u16,
+    pub cover_height: u16,
+    pub player_height: u16,
 }
 
 impl App {
@@ -216,8 +224,15 @@ impl App {
             ipc_rx: None,
             repeat: RepeatMode::Off,
             mpris_rx: None,
-            // mpris_player: None,
             mpris_update_tx: None,
+            dynamic_theme: config.colors.dynamic_theme,
+            dynamic_theme_style: config.colors.dynamic_theme_style.clone(),
+            layout_mode: config.layout.mode.clone(),
+            show_cover: config.layout.show_cover,
+            show_player: config.layout.show_player,
+            cover_width: config.layout.cover_width,
+            cover_height: config.layout.cover_height,
+            player_height: config.layout.player_height,
         })
     }
     pub fn drain_mpris(&mut self) -> Result<()> {
@@ -998,10 +1013,22 @@ impl App {
     fn refresh_cover(&mut self, index: usize) -> Result<()> {
         let track = &mut self.tracks[index];
         let cover_data = enrich_track(track)?;
+
         let img: Option<DynamicImage> = cover_data
             .as_deref()
             .and_then(|bytes| decode_cover(bytes).ok())
             .or_else(|| self.fallback_cover.clone());
+
+        if let Some(ref i) = img {
+            // Extract dynamic colors if enabled
+            if self.dynamic_theme {
+                let dc = crate::ui::dynamic_theme::extract_colors(i, &self.dynamic_theme_style);
+                crate::ui::theme::set_dynamic_colors(dc);
+            }
+        } else {
+            crate::ui::theme::clear_dynamic_colors();
+        }
+
         self.cover_image = img.map(|i| self.picker.new_resize_protocol(i));
         Ok(())
     }
