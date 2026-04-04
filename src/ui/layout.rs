@@ -8,58 +8,11 @@ use crate::ui::confirm_overlay;
 use crate::ui::{
     cover_panel,
     library_panel,
+    lyrics_panel,
     player_panel,
     save_overlay,
     search_overlay, // statusbar,
 };
-
-// At end of draw(), after search_overlay:
-
-// pub fn draw(f: &mut Frame, app: &mut App) {
-//     let size = f.area();
-
-//     // Top-level: main area + status bar
-//     let root = Layout::default()
-//         .direction(Direction::Vertical)
-//         .constraints([
-//             Constraint::Min(0),    // main content
-//             Constraint::Length(1), // status bar
-//         ])
-//         .split(size);
-
-//     let main = root[0];
-//     let status_area = root[1];
-
-//     // Main: left column (cover + player) | right column (library)
-//     let columns = Layout::default()
-//         .direction(Direction::Horizontal)
-//         .constraints([
-//             Constraint::Length(40), // left: cover + player
-//             Constraint::Min(0),     // right: library list
-//         ])
-//         .split(main);
-
-//     let left = columns[0];
-//     let right = columns[1];
-
-//     // Left column: cover on top, player info below
-//     let left_rows = Layout::default()
-//         .direction(Direction::Vertical)
-//         .constraints([
-//             Constraint::Length(22), // cover art (≈ 20 half-block rows + border)
-//             Constraint::Min(0),     // player panel
-//         ])
-//         .split(left);
-//     // After splitting layout, add:
-//     app.list_height = right.height.saturating_sub(4) as usize;
-//     app.scoped_list_height = app.list_height.saturating_sub(1);
-//     cover_panel::draw(f, app, left_rows[0]);
-//     player_panel::draw(f, app, left_rows[1]);
-//     library_panel::draw(f, app, right);
-//     statusbar::draw(f, app, status_area);
-//     save_overlay::draw(f, app);
-//     search_overlay::draw(f, app);
-// }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -75,7 +28,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.layout_mode.as_str() {
         "minimal" => draw_minimal(f, app, main),
         "compact" => draw_compact(f, app, main),
-        "wide" => draw_wide(f, app, main),
+        "default_lyrics" => draw_default_lyrics(f, app, main),
+        "compact_lyrics" => draw_compact_lyrics(f, app, main), // Reuse compact for now
+        "minimal_lyrics" => draw_minimal_lyrics(f, app, main), // Reuse wide for now
         _ => draw_default(f, app, main),
     }
 
@@ -108,6 +63,43 @@ fn draw_default(f: &mut Frame, app: &mut App, area: Rect) {
     library_panel::draw(f, app, columns[1]);
 }
 
+fn draw_default_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
+    // 1. Horizontal split: Left (fixed), Middle (flexible), Right (larger)
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(app.cover_width), // Left sidebar
+            Constraint::Min(20),                 // Library (minimum width)
+            Constraint::Percentage(30),          // Lyrics (increased size)
+        ])
+        .split(area);
+
+    // 2. Vertical split for the Left column (Cover & Player)
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+        .split(columns[0]);
+
+    // 3. Update list heights based on the Middle column
+    app.list_height = columns[1].height.saturating_sub(4) as usize;
+    app.scoped_list_height = app.list_height.saturating_sub(1);
+
+    // 4. Draw Panels
+    if app.show_cover {
+        cover_panel::draw(f, app, left_rows[0]);
+    }
+    if app.show_player {
+        player_panel::draw(f, app, left_rows[1]);
+    }
+
+    library_panel::draw(f, app, columns[1]);
+
+    // This container is now bigger based on the Constraint above
+    // if app.show_lyrics {
+    lyrics_panel::draw(f, app, columns[2]);
+    // }
+}
+
 fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
     // No cover, smaller player
     let rows = Layout::default()
@@ -127,27 +119,37 @@ fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
     library_panel::draw(f, app, rows[0]);
 }
 
-fn draw_wide(f: &mut Frame, app: &mut App, area: Rect) {
-    // Cover on left, library in middle, player on right
-    let columns = Layout::default()
+fn draw_compact_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
+    // 1. Horizontal split: Main Content (Library/Player) vs Lyrics
+    let main_columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(app.cover_width),
-            Constraint::Min(0),
-            Constraint::Length(app.cover_width),
+            Constraint::Min(0),         // Main content takes remaining space
+            Constraint::Percentage(50), // Lyrics sidebar
         ])
         .split(area);
 
-    app.list_height = columns[1].height.saturating_sub(4) as usize;
+    // 2. Vertical split for the Left column (Library on top, Player on bottom)
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(app.player_height.saturating_sub(5)),
+        ])
+        .split(main_columns[0]);
+
+    // 3. Update list heights based on the new Library area (left_rows[0])
+    app.list_height = left_rows[0].height.saturating_sub(4) as usize;
     app.scoped_list_height = app.list_height.saturating_sub(1);
 
-    if app.show_cover {
-        cover_panel::draw(f, app, columns[0]);
-    }
-    library_panel::draw(f, app, columns[1]);
+    // 4. Draw Panels
+    library_panel::draw(f, app, left_rows[0]);
+
     if app.show_player {
-        player_panel::draw(f, app, columns[2]);
+        player_panel::draw_compact(f, app, left_rows[1]);
     }
+
+    lyrics_panel::draw(f, app, main_columns[1]);
 }
 
 fn draw_minimal(f: &mut Frame, app: &mut App, area: Rect) {
@@ -155,4 +157,23 @@ fn draw_minimal(f: &mut Frame, app: &mut App, area: Rect) {
     app.list_height = area.height.saturating_sub(4) as usize;
     app.scoped_list_height = app.list_height.saturating_sub(1);
     library_panel::draw(f, app, area);
+}
+
+fn draw_minimal_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
+    // 1. Simple Horizontal split
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),         // Library
+            Constraint::Percentage(50), // Lyrics
+        ])
+        .split(area);
+
+    // 2. Update list heights based on the Library column (columns[0])
+    app.list_height = columns[0].height.saturating_sub(4) as usize;
+    app.scoped_list_height = app.list_height.saturating_sub(1);
+
+    // 3. Draw Panels
+    library_panel::draw(f, app, columns[0]);
+    lyrics_panel::draw(f, app, columns[1]);
 }

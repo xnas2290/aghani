@@ -11,6 +11,7 @@ mod ui;
 use anyhow::Result;
 use app::App;
 use config::{Config, State};
+mod lyrics;
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -223,88 +224,3 @@ fn run_loop(
     }
     Ok(())
 }
-// fn run_loop(
-//     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-//     app: &mut App,
-//     _config: &Config,
-//     state: &State,
-// ) -> Result<()> {
-//     let mut was_overlay = false;
-
-//     std::thread::sleep(std::time::Duration::from_millis(100));
-//     app.drain_metadata();
-//     let _ = app.restore_session_from_state(state);
-
-//     loop {
-//         let is_overlay = app.save_mode || app.search_mode;
-//         if is_overlay != was_overlay {
-//             terminal.clear()?;
-//         }
-//         was_overlay = is_overlay;
-
-//         terminal.draw(|f| {
-//             ui::layout::draw(f, app);
-//         })?;
-
-//         if handle_events(app)? {
-//             break;
-//         }
-//         app.tick()?;
-//     }
-//     Ok(())
-// }
-
-// fn run_loop(
-//     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-//     app: &mut App,
-//     _config: &Config,
-//     state: &State,
-// ) -> Result<()> {
-//     let mut was_overlay = false;
-//     let mut last_draw = std::time::Instant::now();
-//     let draw_interval = std::time::Duration::from_millis(500); // redraw max 2x/sec for progress bar
-
-//     std::thread::sleep(std::time::Duration::from_millis(100));
-//     app.drain_metadata();
-//     let _ = app.restore_session_from_state(state);
-
-//     // Initial draw
-//     terminal.draw(|f| {
-//         ui::layout::draw(f, app);
-//     })?;
-
-//     loop {
-//         // Block waiting for input with 500ms timeout
-//         let timeout = draw_interval
-//             .checked_sub(last_draw.elapsed())
-//             .unwrap_or(std::time::Duration::ZERO);
-
-//         let is_overlay = app.save_mode || app.search_mode;
-//         if is_overlay != was_overlay {
-//             terminal.clear()?;
-//         }
-//         was_overlay = is_overlay;
-
-//         // Only redraw if there was input OR 500ms passed (for progress bar)
-//         if crossterm::event::poll(timeout)? {
-//             // There's input — handle it
-//             if handle_events(app)? {
-//                 break;
-//             }
-//             // Redraw immediately after input
-//             terminal.draw(|f| {
-//                 ui::layout::draw(f, app);
-//             })?;
-//             last_draw = std::time::Instant::now();
-//         } else {
-//             // Timeout — redraw for progress bar update
-//             terminal.draw(|f| {
-//                 ui::layout::draw(f, app);
-//             })?;
-//             last_draw = std::time::Instant::now();
-//         }
-
-//         app.tick()?;
-//     }
-//     Ok(())
-// }

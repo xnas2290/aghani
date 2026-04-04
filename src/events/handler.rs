@@ -60,8 +60,8 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             match key.code {
                 KeyCode::Esc => app.exit_search(),
                 KeyCode::Enter => app.search_confirm()?,
-                KeyCode::Char('j') | KeyCode::Down => app.search_select_next(),
-                KeyCode::Char('k') | KeyCode::Up => app.search_select_prev(),
+                KeyCode::Down => app.search_select_next(),
+                KeyCode::Up => app.search_select_prev(),
                 KeyCode::Backspace => app.search_backspace(),
                 KeyCode::Char(c) => app.search_type_char(c),
                 _ => {}
@@ -96,9 +96,9 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             Action::SeekForward => app.seek_forward()?,
             Action::SeekBackward => app.seek_backward()?,
             Action::SetLayout(i) => app.set_layout(i),
+            Action::ShowLyrics => app.toggle_lyrics(),
             Action::CancelDialog => app.confirm_dialog_cancel(),
             Action::ConfirmDialog => app.confirm_dialog_confirm()?,
-            // Action::SetLayout(i) => app.set_layout(i),
             Action::None => {}
         }
     }

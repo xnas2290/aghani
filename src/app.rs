@@ -126,6 +126,7 @@ pub struct App {
     pub layout_mode: String,
     pub show_cover: bool,
     pub show_player: bool,
+    // pub show_lyrics: bool,
     pub cover_width: u16,
     pub cover_height: u16,
     pub player_height: u16,
@@ -134,6 +135,10 @@ pub struct App {
     pub new_playlist_mode: bool,
     pub new_playlist_name: String,
     pub music_dir: std::path::PathBuf,
+    pub lyrics: Option<crate::lyrics::Lyrics>,
+    pub lyrics_loading: bool,
+    pub lyrics_error: bool,
+    lyrics_rx: Option<std::sync::mpsc::Receiver<Option<crate::lyrics::Lyrics>>>,
 }
 
 impl App {
@@ -252,8 +257,16 @@ impl App {
             new_playlist_mode: false,
             new_playlist_name: String::new(),
             music_dir: music_dir.to_path_buf(),
+            lyrics: None,
+            lyrics_loading: false,
+            lyrics_error: false,
+            lyrics_rx: None,
+            // show_lyrics: config.layout.show_lyrics,
         })
     }
+    // pub fn toggle_show_lyrics(&mut self) {
+    //     self.show_lyrics = !self.show_lyrics;
+    // }
     pub fn drain_mpris(&mut self) -> Result<()> {
         use crate::mpris::MprisCommand;
 
@@ -404,7 +417,7 @@ impl App {
     //     }
     //     Ok(())
     // }
- 
+
     // ── Playlist management ───────────────────────────────────────────────────────
 
     pub fn start_new_playlist(&mut self) {
@@ -532,11 +545,29 @@ impl App {
     }
 
     // ── Layout cycling ────────────────────────────────────────────────────────────
-
     pub fn set_layout(&mut self, idx: usize) {
-        let layouts = ["default", "compact", "wide", "minimal"];
-        if let Some(&mode) = layouts.get(idx) {
-            self.layout_mode = mode.to_string();
+        let layouts = ["default", "compact", "minimal"];
+
+        // 1. Check if we currently have lyrics enabled
+        let lyrics_on = self.layout_mode.ends_with("_lyrics");
+
+        if let Some(&new_base) = layouts.get(idx) {
+            // 2. If lyrics were on, append the suffix to the new base layout
+            if lyrics_on {
+                self.layout_mode = format!("{}_lyrics", new_base);
+            } else {
+                self.layout_mode = new_base.to_string();
+            }
+        }
+    }
+
+    pub fn toggle_lyrics(&mut self) {
+        if self.layout_mode.ends_with("_lyrics") {
+            // Remove the suffix
+            self.layout_mode = self.layout_mode.replace("_lyrics", "");
+        } else {
+            // Append the suffix
+            self.layout_mode.push_str("_lyrics");
         }
     }
     pub fn open_save_mode(&mut self) {
@@ -834,9 +865,29 @@ impl App {
         self.player.play_with_gain(&path, gain)?;
         self.refresh_cover(index)?;
         self.update_mpris_state();
+        self.fetch_lyrics(index);
         Ok(())
     }
 
+    fn fetch_lyrics(&mut self, index: usize) {
+        let track = &self.tracks[index];
+        let title = track.title.clone();
+        let artist = track.artist.clone();
+        let album = track.album.clone();
+        let duration = track.duration.as_secs_f64();
+
+        self.lyrics = None;
+        self.lyrics_loading = true;
+        self.lyrics_error = false;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.lyrics_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = crate::lyrics::fetch_lyrics(&title, &artist, &album, duration);
+            let _ = tx.send(result);
+        });
+    }
     pub fn play_selected(&mut self) -> Result<()> {
         match self.active_tab {
             LibraryTab::Songs => {
@@ -958,6 +1009,15 @@ impl App {
         self.drain_ipc()?;
         self.drain_mpris()?; // ← add this
         self.update_mpris_state(); // keep position in sync
+        // Check if lyrics arrived
+        if let Some(ref rx) = self.lyrics_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.lyrics_loading = false;
+                self.lyrics_error = result.is_none();
+                self.lyrics = result;
+                self.lyrics_rx = None;
+            }
+        }
         if self.current_index.is_some() && self.player.is_finished() {
             match self.repeat {
                 RepeatMode::One => {
@@ -1190,6 +1250,7 @@ impl App {
         let tabs = LibraryTab::all();
         let next = (self.active_tab.index() + 1) % tabs.len();
         self.active_tab = tabs[next].clone();
+        self.ensure_selection();
     }
 
     pub fn tab_prev(&mut self) {
@@ -1201,6 +1262,32 @@ impl App {
             current - 1
         };
         self.active_tab = tabs[prev].clone();
+        self.ensure_selection();
+    }
+
+    fn ensure_selection(&mut self) {
+        match self.active_tab {
+            LibraryTab::Songs => {
+                if self.selected_index.is_none() && !self.all_track_indices.is_empty() {
+                    self.selected_index = Some(0);
+                }
+            }
+            LibraryTab::Albums => {
+                if self.album_selected.is_none() && !self.albums.is_empty() {
+                    self.album_selected = Some(0);
+                }
+            }
+            LibraryTab::Artists => {
+                if self.artist_selected.is_none() && !self.artists.is_empty() {
+                    self.artist_selected = Some(0);
+                }
+            }
+            LibraryTab::Playlists => {
+                if self.playlist_selected.is_none() && !self.playlists.is_empty() {
+                    self.playlist_selected = Some(0);
+                }
+            }
+        }
     }
 
     pub fn album_track_count(&self, album: &str) -> usize {
@@ -1347,8 +1434,7 @@ impl App {
         self.shuffle_order = indices;
     }
 
-    pub fn 
-    enter_search(&mut self) {
+    pub fn enter_search(&mut self) {
         self.search_mode = true;
         self.search_query.clear();
         self.search_results.clear();

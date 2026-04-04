@@ -50,6 +50,7 @@ pub struct KeysConfig {
     pub set_layout_2: String,
     pub set_layout_3: String,
     pub set_layout_4: String,
+    pub show_lyrics: String,
 }
 
 impl Default for KeysConfig {
@@ -82,6 +83,7 @@ impl Default for KeysConfig {
             set_layout_2: "2".into(),
             set_layout_3: "3".into(),
             set_layout_4: "4".into(),
+            show_lyrics: "l".into(),
         }
     }
 }
@@ -124,6 +126,8 @@ pub struct LayoutConfig {
     pub show_cover: bool,
     /// Show player panel: true/false  
     pub show_player: bool,
+    /// Show lyrics panel: true/false
+    // pub show_lyrics: bool,
     /// Cover panel width (columns)
     pub cover_width: u16,
     /// Cover panel height (rows)
@@ -139,6 +143,7 @@ impl Default for LayoutConfig {
         LayoutConfig {
             show_cover: true,
             show_player: true,
+            // show_lyrics: false,
             cover_width: 40,
             cover_height: 22,
             player_height: 12,
