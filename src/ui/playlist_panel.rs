@@ -66,11 +66,56 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
         ])
         .split(area);
 
-    // Header
+    // Calculate total duration for the playlist
+    let total_secs: u64 = indices
+        .iter()
+        .map(|&idx| app.tracks[idx].duration.as_secs())
+        .sum();
+    let total_time = if total_secs >= 3600 {
+        format!(
+            "{:02}:{:02}:{:02}",
+            total_secs / 3600,
+            (total_secs % 3600) / 60,
+            total_secs % 60
+        )
+    } else {
+        format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+    };
+    // Calculate available width for playlist name
+    let right_text = format!("[{}]", total_time);
+    let right_width = right_text.width();
+    let total_offset = 4; // Space for padding before and after playlist name
+    let available_width = chunks[0].width as usize;
+    let max_name_width = available_width.saturating_sub(right_width + total_offset);
+
+    let display_name = if playlist.name.width() > max_name_width {
+        let mut s = String::new();
+        let mut w = 2;
+        for c in playlist.name.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if w + cw > max_name_width {
+                if s.len() < playlist.name.len() {
+                    s.push('…');
+                }
+                break;
+            }
+            s.push(c);
+            w += cw;
+        }
+        s
+    } else {
+        playlist.name.clone()
+    };
+
+    let padding_len =
+        available_width.saturating_sub(display_name.width() + right_width + total_offset);
+
+    // Header with total duration at the end
     let header = Paragraph::new(Line::from(vec![
         Span::raw("  "),
-        Span::styled(playlist.name.to_uppercase(), Theme::accent()),
-        // Span::styled(format!("  [{} songs]", indices.len()), Theme::dim()),
+        Span::styled(display_name.to_uppercase(), Theme::accent()),
+        Span::raw(" ".repeat(padding_len)),
+        Span::styled(right_text, Theme::normal()),
     ]));
     f.render_widget(header, chunks[0]);
 
@@ -132,7 +177,7 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
         })
         .collect();
 
-    let mut state = make_list_state(app.playlist_song_selected, app.playlist_songs_offset); //ListState::default();
+    let mut state = make_list_state(app.playlist_song_selected, app.playlist_songs_offset);
     state.select(app.playlist_song_selected);
 
     let list = List::new(items)

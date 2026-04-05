@@ -34,4 +34,4 @@ zvariant = "4.0"
 async-std = { version = "1", features = ["attributes"] }
 smol = "2"
 color-thief = "0.2"
-ureq = "2"
+ureq = { version = "2.9", features = ["json"] }

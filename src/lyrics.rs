@@ -1,152 +1,181 @@
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct LrcLine {
-    pub time:  Duration,
-    pub text:  String,
+    pub time: Duration,
+    pub text: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct Lyrics {
     pub lines: Vec<LrcLine>,
+    #[allow(dead_code)]
     pub synced: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LrcLibResponse {
+    synced_lyrics: Option<String>,
+    plain_lyrics: Option<String>,
+}
+
 impl Lyrics {
-    /// Returns the current line index based on playback position
+    /// Optimized binary search for the current line
     pub fn current_line(&self, elapsed: Duration) -> Option<usize> {
-        if self.lines.is_empty() { return None; }
-        // Find the last line whose timestamp <= elapsed
-        let mut idx = 0;
-        for (i, line) in self.lines.iter().enumerate() {
-            if line.time <= elapsed {
-                idx = i;
-            } else {
-                break;
-            }
+        if self.lines.is_empty() {
+            return None;
         }
-        Some(idx)
+
+        // binary search for the first line that is GREATER than elapsed
+        // then step back one.
+        match self.lines.partition_point(|line| line.time <= elapsed) {
+            0 => Some(0),
+            i => Some(i - 1),
+        }
     }
 }
 
-// ── Cache path ────────────────────────────────────────────────────────────────
-
-pub fn cache_path(artist: &str, title: &str) -> PathBuf {
-    let cache_dir = dirs_next::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("aghani")
-        .join("lyrics");
-    let _ = std::fs::create_dir_all(&cache_dir);
-    let filename = format!(
-        "{}-{}.lrc",
-        sanitize(artist),
-        sanitize(title)
-    );
-    cache_dir.join(filename)
+/// Path for manually added lyrics — stored next to the audio file
+pub fn manual_lyrics_path(track_path: &std::path::Path) -> PathBuf {
+    track_path.with_extension("lrc")
 }
 
-fn sanitize(s: &str) -> String {
+/// Load lyrics from a .lrc file next to the track (manual override)
+pub fn load_manual(track_path: &std::path::Path) -> Option<Lyrics> {
+    let lrc_path = manual_lyrics_path(track_path);
+    let content = std::fs::read_to_string(&lrc_path).ok()?;
+    parse_lrc(&content)
+}
+
+/// Check if manual lyrics exist for a track
+pub fn has_manual(track_path: &std::path::Path) -> bool {
+    manual_lyrics_path(track_path).exists()
+}
+
+// ── Improved Encoding ─────────────────────────────────────────────────────────
+
+fn url_encode(s: &str) -> String {
+    // Using a more robust encoding approach for UTF-8
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
-        .collect::<String>()
-        .to_lowercase()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+                c.to_string()
+            } else {
+                c.encode_utf8(&mut [0; 4])
+                    .as_bytes()
+                    .iter()
+                    .map(|b| format!("%{:02X}", b))
+                    .collect()
+            }
+        })
+        .collect()
 }
 
-// ── LRCLIB fetch ──────────────────────────────────────────────────────────────
+// ── Fetch Logic with Fallbacks ────────────────────────────────────────────────
 
 pub fn fetch_lyrics(
     title: &str,
     artist: &str,
     album: &str,
-    duration_secs: f64,
+    duration: f64,
+    track_path: &std::path::Path,
 ) -> Option<Lyrics> {
+    if let Some(lyrics) = load_manual(track_path) {
+        return Some(lyrics);
+    }
     let cache = cache_path(artist, title);
 
-    // Check cache first
     if cache.exists() {
         let content = std::fs::read_to_string(&cache).ok()?;
-        if content.trim() == "NOT_FOUND" {
-            return None; // cached negative result
+        if content == "NOT_FOUND" {
+            return None;
         }
         return parse_lrc(&content);
     }
 
-    // Fetch from LRCLIB
+    // Try Source 1: LRCLIB Direct Get (Fastest)
+    if let Some(lrc) = lrclib_get(artist, title, album, duration) {
+        let _ = std::fs::write(&cache, &lrc);
+        return parse_lrc(&lrc);
+    }
+
+    // Try Source 2: LRCLIB Search (Better for special characters/mismatched metadata)
+    if let Some(lrc) = lrclib_search(artist, title) {
+        let _ = std::fs::write(&cache, &lrc);
+        return parse_lrc(&lrc);
+    }
+
+    // Cache negative result
+    let _ = std::fs::write(&cache, "NOT_FOUND");
+    None
+}
+
+/// Exact match lookup
+fn lrclib_get(artist: &str, title: &str, album: &str, dur: f64) -> Option<String> {
     let url = format!(
         "https://lrclib.net/api/get?artist_name={}&track_name={}&album_name={}&duration={}",
-        urlenccode(artist),
-        urlenccode(title),
-        urlenccode(album),
-        duration_secs as u32,
+        url_encode(artist),
+        url_encode(title),
+        url_encode(album),
+        dur as u32
     );
 
-    let response = ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .call()
-        .ok()?;
-
-    if response.status() == 404 {
-        // Cache the negative result so we don't hit the API repeatedly
-        let _ = std::fs::write(&cache, "NOT_FOUND");
-        return None;
-    }
-
-    let body = response.into_string().ok()?;
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-
-    // Prefer synced lyrics, fall back to plain
-    let lrc_content = json["syncedLyrics"]
-        .as_str()
-        .or_else(|| json["plainLyrics"].as_str())?;
-
-    if lrc_content.is_empty() {
-        let _ = std::fs::write(&cache, "NOT_FOUND");
-        return None;
-    }
-
-    // Cache the result
-    let _ = std::fs::write(&cache, lrc_content);
-
-    parse_lrc(lrc_content)
+    request_lrc_content(&url)
 }
 
-fn urlenccode(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-        ' ' => "+".to_string(),
-        c => format!("%{:02X}", c as u32),
-    }).collect()
+/// Broader search lookup - useful when titles have (feat. X) or special symbols
+fn lrclib_search(artist: &str, title: &str) -> Option<String> {
+    let query = url_encode(&format!("{} {}", artist, title));
+    let url = format!("https://lrclib.net/api/search?q={}", query);
+
+    let resp = ureq::get(&url).call().ok()?;
+    let results: Vec<LrcLibResponse> = resp.into_json().ok()?;
+
+    // Pick the first result that has lyrics
+    results
+        .into_iter()
+        .find_map(|r| r.synced_lyrics.or(r.plain_lyrics))
 }
 
-// ── LRC parser ────────────────────────────────────────────────────────────────
+fn request_lrc_content(url: &str) -> Option<String> {
+    let resp = ureq::get(url).timeout(Duration::from_secs(5)).call().ok()?;
+
+    let data: LrcLibResponse = resp.into_json().ok()?;
+    data.synced_lyrics.or(data.plain_lyrics)
+}
+
+// ── Improved Parser ───────────────────────────────────────────────────────────
 
 pub fn parse_lrc(content: &str) -> Option<Lyrics> {
-    let mut lines: Vec<LrcLine> = Vec::new();
+    let mut lines = Vec::new();
     let mut synced = false;
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
+    for line in content.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if line.starts_with('[') && line.contains(']') {
+            let parts: Vec<&str> = line.splitn(2, ']').collect();
+            if parts.len() == 2 {
+                let timestamp = &parts[0][1..]; // strip '['
+                let text = parts[1].trim();
 
-        // Try to parse timestamp [mm:ss.xx]
-        if line.starts_with('[') {
-            if let Some(close) = line.find(']') {
-                let tag = &line[1..close];
-                let text = line[close + 1..].trim().to_string();
-
-                if let Some(dur) = parse_timestamp(tag) {
+                if let Some(dur) = parse_timestamp(timestamp) {
                     synced = true;
                     if !text.is_empty() {
-                        lines.push(LrcLine { time: dur, text });
+                        lines.push(LrcLine {
+                            time: dur,
+                            text: text.to_string(),
+                        });
                     }
                     continue;
                 }
             }
         }
 
-        // Plain lyric line
-        if !line.starts_with('[') {
+        // If not a timestamped line but we haven't found any timestamps yet,
+        // treat as plain lyrics
+        if !synced {
             lines.push(LrcLine {
                 time: Duration::ZERO,
                 text: line.to_string(),
@@ -154,20 +183,43 @@ pub fn parse_lrc(content: &str) -> Option<Lyrics> {
         }
     }
 
-    if lines.is_empty() { return None; }
-
+    if lines.is_empty() {
+        return None;
+    }
     lines.sort_by_key(|l| l.time);
-
     Some(Lyrics { lines, synced })
 }
 
 fn parse_timestamp(s: &str) -> Option<Duration> {
-    // Format: mm:ss.xx or mm:ss
-    let parts: Vec<&str> = s.splitn(2, ':').collect();
-    if parts.len() != 2 { return None; }
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
 
-    let mins: f64 = parts[0].parse().ok()?;
-    let secs: f64 = parts[1].parse().ok()?;
+    let min: f64 = parts[0].parse().ok()?;
+    let sec: f64 = parts[1].parse().ok()?;
+    Some(Duration::from_secs_f64(min * 60.0 + sec))
+}
 
-    Some(Duration::from_secs_f64(mins * 60.0 + secs))
+pub fn cache_path(artist: &str, title: &str) -> PathBuf {
+    let cache_dir = dirs_next::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("aghani")
+        .join("lyrics");
+    let _ = std::fs::create_dir_all(&cache_dir);
+
+    let filename = format!("{}-{}.lrc", sanitize(artist), sanitize(title));
+    cache_dir.join(filename)
+}
+
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

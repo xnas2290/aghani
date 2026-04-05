@@ -875,6 +875,7 @@ impl App {
         let artist = track.artist.clone();
         let album = track.album.clone();
         let duration = track.duration.as_secs_f64();
+        let path = track.path.clone(); // ← add this
 
         self.lyrics = None;
         self.lyrics_loading = true;
@@ -884,7 +885,9 @@ impl App {
         self.lyrics_rx = Some(rx);
 
         std::thread::spawn(move || {
-            let result = crate::lyrics::fetch_lyrics(&title, &artist, &album, duration);
+            let result = crate::lyrics::fetch_lyrics(
+                &title, &artist, &album, duration, &path, // ← pass path
+            );
             let _ = tx.send(result);
         });
     }
@@ -974,17 +977,66 @@ impl App {
         Ok(())
     }
 
+    fn is_selection_in_sync(&self) -> bool {
+        // If nothing is playing, always allow
+        let current = match self.current_index {
+            Some(c) => c,
+            None => return true,
+        };
+
+        // Get what's actually selected in current tab
+        let selected_real: Option<usize> = match self.active_tab {
+            LibraryTab::Songs => self
+                .selected_index
+                .and_then(|si| self.all_track_indices.get(si).copied()),
+
+            LibraryTab::Albums => match &self.album_scope {
+                LibraryScope::Album(_) => self
+                    .scoped_song_selected
+                    .and_then(|si| self.scoped_track_indices.get(si).copied()),
+                _ => return true,
+            },
+
+            LibraryTab::Playlists => match &self.playlist_scope {
+                PlaylistScope::Open(pi) => {
+                    let indices = self.playlist_track_indices(*pi);
+                    self.playlist_song_selected
+                        .and_then(|si| indices.get(si).copied())
+                }
+                _ => return true,
+            },
+
+            LibraryTab::Artists => return true,
+        };
+
+        match selected_real {
+            None => true,            // nothing selected → allow
+            Some(s) => s == current, // selected matches playing → allow, else block
+        }
+    }
+
     pub fn next_track(&mut self) -> Result<()> {
         let indices = self.current_play_indices();
         if indices.is_empty() {
             return Ok(());
         }
-        let current_pos = self
+
+        let current_pos = match self
             .current_index
             .and_then(|ci| indices.iter().position(|&i| i == ci))
-            .unwrap_or(0);
+        {
+            Some(pos) => pos,
+            None => return Ok(()),
+        };
+
+        let was_in_sync = self.is_selection_in_sync();
         let next_pos = (current_pos + 1) % indices.len();
-        self.play_index(indices[next_pos])
+        self.play_index(indices[next_pos])?;
+
+        if was_in_sync {
+            self.sync_cursor_to_track(indices[next_pos]);
+        }
+        Ok(())
     }
 
     pub fn prev_track(&mut self) -> Result<()> {
@@ -992,16 +1044,73 @@ impl App {
         if indices.is_empty() {
             return Ok(());
         }
-        let current_pos = self
+
+        let current_pos = match self
             .current_index
             .and_then(|ci| indices.iter().position(|&i| i == ci))
-            .unwrap_or(0);
+        {
+            Some(pos) => pos,
+            None => return Ok(()),
+        };
+
+        let was_in_sync = self.is_selection_in_sync();
         let prev_pos = if current_pos == 0 {
             indices.len() - 1
         } else {
             current_pos - 1
         };
-        self.play_index(indices[prev_pos])
+        self.play_index(indices[prev_pos])?;
+
+        if was_in_sync {
+            self.sync_cursor_to_track(indices[prev_pos]);
+        }
+        Ok(())
+    }
+
+    fn sync_cursor_to_track(&mut self, real_idx: usize) {
+        match self.active_tab {
+            LibraryTab::Songs => {
+                self.selected_index = self.all_track_indices.iter().position(|&i| i == real_idx);
+                self.songs_offset = if self.shuffle {
+                    center_offset(self.selected_index, self.list_height)
+                } else {
+                    scroll_offset(self.selected_index, self.songs_offset, self.list_height)
+                };
+            }
+            LibraryTab::Albums => {
+                if let LibraryScope::Album(_) = &self.album_scope {
+                    self.scoped_song_selected = self
+                        .scoped_track_indices
+                        .iter()
+                        .position(|&i| i == real_idx);
+                    self.scoped_songs_offset = if self.shuffle {
+                        center_offset(self.scoped_song_selected, self.scoped_list_height)
+                    } else {
+                        scroll_offset(
+                            self.scoped_song_selected,
+                            self.scoped_songs_offset,
+                            self.scoped_list_height,
+                        )
+                    };
+                }
+            }
+            LibraryTab::Playlists => {
+                if let PlaylistScope::Open(pi) = &self.playlist_scope {
+                    let indices = self.playlist_track_indices(*pi);
+                    self.playlist_song_selected = indices.iter().position(|&i| i == real_idx);
+                    self.playlist_songs_offset = if self.shuffle {
+                        center_offset(self.playlist_song_selected, self.list_height)
+                    } else {
+                        scroll_offset(
+                            self.playlist_song_selected,
+                            self.playlist_songs_offset,
+                            self.list_height,
+                        )
+                    };
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn tick(&mut self) -> Result<()> {
@@ -1770,6 +1879,45 @@ impl App {
     //         }
     //     }
     // }
+
+    pub fn edit_lyrics(&mut self) -> Result<()> {
+        let track = match self.current_track() {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        let lrc_path = crate::lyrics::manual_lyrics_path(&track.path);
+
+        // If no manual file exists yet, create a template
+        if !lrc_path.exists() {
+            let template = build_lrc_template(track);
+            std::fs::write(&lrc_path, template)?;
+        }
+
+        // Suspend TUI
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+
+        // Open editor
+        let editor = std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .unwrap_or_else(|_| "nano".to_string());
+
+        std::process::Command::new(&editor)
+            .arg(&lrc_path)
+            .status()?;
+
+        // Restore TUI
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+
+        // Reload lyrics from the edited file
+        if let Some(idx) = self.current_index {
+            self.fetch_lyrics(idx);
+        }
+
+        Ok(())
+    }
 }
 
 pub fn scroll_offset(
@@ -1789,7 +1937,17 @@ pub fn scroll_offset(
         current_offset
     }
 }
-
+pub fn center_offset(selected: Option<usize>, visible_height: usize) -> usize {
+    let sel = match selected {
+        Some(s) => s,
+        None => return 0,
+    };
+    if sel < visible_height / 2 {
+        0
+    } else {
+        sel - visible_height / 2
+    }
+}
 fn rand_usize(state: &mut u64) -> usize {
     *state = state
         .wrapping_mul(6364136223846793005)
@@ -1821,4 +1979,20 @@ fn cycle_prev(idx: &mut Option<usize>, len: usize) {
         }
         None => 0,
     });
+}
+
+fn build_lrc_template(track: &crate::library::track::Track) -> String {
+    format!(
+        "[ti:{}]\n[ar:{}]\n[al:{}]\n[by:aghani]\n\n\
+         # Add lyrics below in LRC format:\n\
+         # [mm:ss.xx] Lyric line\n\
+         # Example:\n\
+         # [00:12.00] First line of lyrics\n\
+         # [00:17.20] Second line\n\
+         #\n\
+         # Or plain text (no timestamps):\n\
+         # First line\n\
+         # Second line\n",
+        track.title, track.artist, track.album
+    )
 }

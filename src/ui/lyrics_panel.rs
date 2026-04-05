@@ -9,8 +9,18 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+    let has_manual = app
+        .current_track()
+        .map(|t| crate::lyrics::has_manual(&t.path))
+        .unwrap_or(false);
+
+    let title = if has_manual {
+        "  Lyrics ✎ "
+    } else {
+        "  Lyrics "
+    };
     let block = Block::default()
-        .title(Span::styled("  Lyrics ", Theme::title()))
+        .title(Span::styled(title, Theme::title()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Theme::border());

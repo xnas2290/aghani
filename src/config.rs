@@ -51,6 +51,7 @@ pub struct KeysConfig {
     pub set_layout_3: String,
     pub set_layout_4: String,
     pub show_lyrics: String,
+    pub edit_lyrics: String,
 }
 
 impl Default for KeysConfig {
@@ -84,6 +85,7 @@ impl Default for KeysConfig {
             set_layout_3: "3".into(),
             set_layout_4: "4".into(),
             show_lyrics: "l".into(),
+            edit_lyrics: "L".into(),
         }
     }
 }

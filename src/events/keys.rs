@@ -31,6 +31,7 @@ pub enum Action {
     // CycleLayout,    // '1','2','3','4'
     SetLayout(usize),
     ShowLyrics,
+    EditLyrics,
 }
 
 use crate::config::KeysConfig;
@@ -68,7 +69,7 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
         k if k == keys.set_layout_3 => Action::SetLayout(2),
         // k if k == keys.set_layout_4 => Action::SetLayout(3),
         k if k == keys.show_lyrics => Action::ShowLyrics,
-
+        k if k == keys.edit_lyrics => Action::EditLyrics, // Shift+L
         _ => Action::None,
     }
 }

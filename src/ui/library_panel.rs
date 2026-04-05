@@ -75,8 +75,8 @@ fn status_text(app: &App) -> String {
                 if let Some(pos) = app.all_track_indices.iter().position(|&i| i == current) {
                     return format!(
                         "{}  {}/{}",
-                        pos + 1,
                         app.selected_index.map(|i| i + 1).unwrap_or(0),
+                        pos + 1,
                         app.all_track_indices.len()
                     );
                 }
@@ -88,12 +88,21 @@ fn status_text(app: &App) -> String {
             LibraryScope::Album(_) => {
                 if let Some(current) = app.current_index {
                     if let Some(pos) = app.scoped_track_indices.iter().position(|&i| i == current) {
-                        return format!("{}/{}", pos + 1, app.scoped_track_indices.len());
+                        return format!(
+                            "{}  {}/{}",
+                            app.scoped_song_selected.map(|i| i + 1).unwrap_or(0),
+                            pos + 1,
+                            app.scoped_track_indices.len()
+                        );
                     }
                 }
                 format!("0/{}", app.scoped_track_indices.len())
             }
-            LibraryScope::All => format!("{} albums", app.albums.len()),
+            LibraryScope::All => format!(
+                "{}  {} albums",
+                app.album_selected.map(|i| i + 1).unwrap_or(0),
+                app.albums.len()
+            ),
             _ => String::new(),
         },
 
@@ -106,7 +115,11 @@ fn status_text(app: &App) -> String {
                     app.scoped_albums.len()
                 )
             }
-            LibraryScope::All => format!("{} artists", app.artists.len()),
+            LibraryScope::All => format!(
+                "{}  {} artists",
+                app.artist_selected.map(|i| i + 1).unwrap_or(0),
+                app.artists.len()
+            ),
             _ => String::new(),
         },
 
@@ -116,18 +129,26 @@ fn status_text(app: &App) -> String {
 
                 if let Some(current) = app.current_index {
                     if let Some(pos) = indices.iter().position(|&i| i == current) {
-                        return format!("{}/{}", pos + 1, indices.len());
+                        return format!(
+                            "{}  {}/{}",
+                            app.playlist_song_selected.map(|i| i + 1).unwrap_or(0),
+                            pos + 1,
+                            indices.len()
+                        );
                     }
                 }
 
                 format!("0/{}", indices.len())
             }
 
-            PlaylistScope::All => format!("{} playlists", app.playlists.len()),
+            PlaylistScope::All => format!(
+                "{}  {} playlists",
+                app.selected_index.map(|i| i + 1).unwrap_or(0),
+                app.playlists.len()
+            ),
         },
     }
 }
-
 fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .all_track_indices
@@ -153,16 +174,18 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
                 format!("{} [{}]", t.duration_str(), t.extension().to_uppercase())
             };
             let right_width = right_text.width();
-            let total_offset = 6;
+            let total_offset = 6; // Space for icon, highlight symbol, and padding
             let max_title_width = (area.width as usize).saturating_sub(right_width + total_offset);
 
             let display_title = if t.title.width() > max_title_width {
                 let mut s = String::new();
-                let mut w = 0;
+                let mut w = 2;
                 for c in t.title.chars() {
                     let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                    if w + cw + 1 > max_title_width {
-                        s.push('…');
+                    if w + cw > max_title_width {
+                        if s.len() < t.title.len() {
+                            s.push('…');
+                        }
                         break;
                     }
                     s.push(c);
@@ -186,8 +209,7 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let mut state = make_list_state(app.selected_index, app.songs_offset); // ListState::default();
-    // state.select(app.selected_index);
+    let mut state = make_list_state(app.selected_index, app.songs_offset);
     f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
 }
 
@@ -205,14 +227,44 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
             .sum();
         let total_time = format!("{:02}:{:02}", total_secs / 60, total_secs % 60);
 
+        // Calculate available width for album name
+        let right_text = format!("[{}]  ", total_time);
+        let right_width = right_text.width();
+        let total_offset = 4; // Space for padding before and after album name
+        let available_width = sub_chunks[0].width as usize;
+        let max_name_width = available_width.saturating_sub(right_width + total_offset);
+
+        let display_name = if album_name.width() > max_name_width {
+            let mut s = String::new();
+            let mut w = 2;
+            for c in album_name.chars() {
+                let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if w + cw > max_name_width {
+                    if s.len() < album_name.len() {
+                        s.push('…');
+                    }
+                    break;
+                }
+                s.push(c);
+                w += cw;
+            }
+            s
+        } else {
+            album_name.clone()
+        };
+
+        let padding_len =
+            available_width.saturating_sub(display_name.width() + right_width + total_offset);
+
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    album_name.to_uppercase(),
+                    display_name.to_uppercase(),
                     Theme::accent().add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(format!("  [{}]", total_time), Theme::dim()),
+                Span::raw(" ".repeat(padding_len)),
+                Span::styled(right_text, Theme::normal()),
             ])),
             sub_chunks[0],
         );
@@ -234,16 +286,39 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                     Theme::normal()
                 };
 
-                let right_text = format!("{} [{}]", t.duration_str(), t.extension().to_uppercase());
-                let padding = " ".repeat(
-                    (sub_chunks[1].width as usize)
-                        .saturating_sub(t.title.width() + right_text.width() + 6),
-                );
+                let icon = if is_playing { "▶ " } else { "  " };
+                let right_text = format!("{} {}", t.duration_str(), t.extension().to_uppercase());
+                let right_width = right_text.width();
+                let total_offset = 6; // Space for icon, highlight symbol, and padding
+                let available_width = sub_chunks[1].width as usize;
+                let max_title_width = available_width.saturating_sub(right_width + total_offset);
+
+                let display_title = if t.title.width() > max_title_width {
+                    let mut s = String::new();
+                    let mut w = 2;
+                    for c in t.title.chars() {
+                        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                        if w + cw > max_title_width {
+                            if s.len() < t.title.len() {
+                                s.push('…');
+                            }
+                            break;
+                        }
+                        s.push(c);
+                        w += cw;
+                    }
+                    s
+                } else {
+                    t.title.clone()
+                };
+
+                let padding_len = available_width
+                    .saturating_sub(display_title.width() + right_width + total_offset);
 
                 ListItem::new(Line::from(vec![
-                    Span::styled(if is_playing { "▶ " } else { "  " }, style),
-                    Span::styled(t.title.clone(), style),
-                    Span::raw(padding),
+                    Span::styled(icon, style),
+                    Span::styled(display_title, style),
+                    Span::raw(" ".repeat(padding_len)),
                     Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
                 ]))
                 .style(style)
@@ -251,7 +326,6 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
             .collect();
 
         let mut state = make_list_state(app.scoped_song_selected, app.scoped_songs_offset);
-        // state.select(app.scoped_song_selected);
         f.render_stateful_widget(
             List::new(items).highlight_symbol("› "),
             sub_chunks[1],
@@ -285,17 +359,19 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                 };
 
                 let right_width = right_info.width();
-                let total_offset = 6;
+                let total_offset = 6; // Space for icon, highlight symbol, and padding
                 let max_name_width =
                     (area.width as usize).saturating_sub(right_width + total_offset);
 
                 let display_name = if album.width() > max_name_width {
                     let mut s = String::new();
-                    let mut w = 0;
+                    let mut w = 2;
                     for c in album.chars() {
                         let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                        if w + cw + 1 > max_name_width {
-                            s.push('…');
+                        if w + cw > max_name_width {
+                            if s.len() < album.len() {
+                                s.push('…');
+                            }
                             break;
                         }
                         s.push(c);
@@ -306,15 +382,13 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                     album.clone()
                 };
 
-                let padding = " ".repeat(
-                    (area.width as usize)
-                        .saturating_sub(display_name.width() + right_width + total_offset),
-                );
+                let padding_len = (area.width as usize)
+                    .saturating_sub(display_name.width() + right_width + total_offset);
 
                 ListItem::new(Line::from(vec![
                     Span::styled(if is_active { "▶ " } else { "  " }, style),
                     Span::styled(display_name, style),
-                    Span::raw(padding),
+                    Span::raw(" ".repeat(padding_len)),
                     Span::styled(right_info, if is_selected { style } else { Theme::dim() }),
                 ]))
                 .style(style)

@@ -99,6 +99,7 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             Action::ShowLyrics => app.toggle_lyrics(),
             Action::CancelDialog => app.confirm_dialog_cancel(),
             Action::ConfirmDialog => app.confirm_dialog_confirm()?,
+            Action::EditLyrics => app.edit_lyrics()?,
             Action::None => {}
         }
     }
