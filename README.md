@@ -20,6 +20,7 @@ A fast, feature-rich terminal music player with album art, lyrics, and MPRIS sup
 ## Dependencies
 
 - `ffmpeg` — audio playback and seeking
+- `chafa` — cover support
 - A terminal with true color support (kitty, wezterm, alacritty, etc.)
 
 ## Installation
@@ -62,7 +63,7 @@ aghani --clear-caches     # clear all caches
 | ----- | -------- |
 | `Space` | Play / Pause |
 | `n` / `p` | Next / Previous |
-| `j` / `k` | Navigate |
+| `Up` / `Down` | Navigate |
 | `Enter` | Select / Open |
 | `Tab` | Switch tab |
 | `/` | Search |
@@ -71,10 +72,12 @@ aghani --clear-caches     # clear all caches
 | `r` | Toggle shuffle |
 | `Shift+R` | Toggle repeat |
 | `>` / `<` | Seek ±5s |
-| `+` / `-` | Volume |
+| `=` / `-` | Volume |
 | `g` | Go to playing track |
+| `t` | Go to the top of the list |
+| `b` | Go to the bottom of the list |
+| `l` | Show lyrics |
 | `L` | Edit lyrics |
-| `Shift+L` | Toggle manual/fetched lyrics |
 | `1`–`4` | Switch layout |
 | `x` | Back |
 | `q` | Quit |

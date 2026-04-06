@@ -219,7 +219,9 @@ fn ensure_single_instance(lock_path: &str) -> Result<()> {
                 eprintln!("Aghani is already running (pid {})", pid);
                 std::process::exit(0);
             }
+
             // Process is dead — stale lock, continue
+            println!("Aghani is already running (pid {})", pid);
         }
     }
 
