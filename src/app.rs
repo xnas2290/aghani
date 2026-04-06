@@ -139,6 +139,7 @@ pub struct App {
     pub lyrics_loading: bool,
     pub lyrics_error: bool,
     lyrics_rx: Option<std::sync::mpsc::Receiver<Option<crate::lyrics::Lyrics>>>,
+    pub needs_full_redraw: bool,
 }
 
 impl App {
@@ -261,6 +262,7 @@ impl App {
             lyrics_loading: false,
             lyrics_error: false,
             lyrics_rx: None,
+            needs_full_redraw: false,
             // show_lyrics: config.layout.show_lyrics,
         })
     }
@@ -546,7 +548,7 @@ impl App {
 
     // ── Layout cycling ────────────────────────────────────────────────────────────
     pub fn set_layout(&mut self, idx: usize) {
-        let layouts = ["default", "compact", "minimal"];
+        let layouts = ["default", "clean", "compact", "minimal"];
 
         // 1. Check if we currently have lyrics enabled
         let lyrics_on = self.layout_mode.ends_with("_lyrics");
@@ -1228,7 +1230,7 @@ impl App {
                     self.playlist_songs_offset = scroll_offset(
                         self.playlist_song_selected,
                         self.playlist_songs_offset,
-                        self.list_height,
+                        self.scoped_list_height,
                     );
                 }
             },
@@ -1318,7 +1320,7 @@ impl App {
                     self.playlist_songs_offset = scroll_offset(
                         self.playlist_song_selected,
                         self.playlist_songs_offset,
-                        self.list_height,
+                        self.scoped_list_height,
                     );
                 }
             },
@@ -1901,8 +1903,15 @@ impl App {
         // Open editor
         let editor = std::env::var("EDITOR")
             .or_else(|_| std::env::var("VISUAL"))
-            .unwrap_or_else(|_| "nano".to_string());
-
+            .unwrap_or_else(|_| {
+                // Try common editors in order
+                for e in &["nvim", "vim", "vi", "nano"] {
+                    if which(e) {
+                        return e.to_string();
+                    }
+                }
+                "nano".to_string()
+            });
         std::process::Command::new(&editor)
             .arg(&lrc_path)
             .status()?;
@@ -1910,7 +1919,7 @@ impl App {
         // Restore TUI
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-
+        self.needs_full_redraw = true;
         // Reload lyrics from the edited file
         if let Some(idx) = self.current_index {
             self.fetch_lyrics(idx);
@@ -1995,4 +2004,13 @@ fn build_lrc_template(track: &crate::library::track::Track) -> String {
          # Second line\n",
         track.title, track.artist, track.album
     )
+}
+fn which(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }

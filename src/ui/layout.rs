@@ -28,9 +28,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.layout_mode.as_str() {
         "minimal" => draw_minimal(f, app, main),
         "compact" => draw_compact(f, app, main),
+        "clean" => draw_default_clean(f, app, main),
         "default_lyrics" => draw_default_lyrics(f, app, main),
-        "compact_lyrics" => draw_compact_lyrics(f, app, main), // Reuse compact for now
-        "minimal_lyrics" => draw_minimal_lyrics(f, app, main), // Reuse wide for now
+        "compact_lyrics" => draw_compact_lyrics(f, app, main),
+        "minimal_lyrics" => draw_minimal_lyrics(f, app, main),
+        "clean_lyrics" => draw_default_lyrics_clean(f, app, main),
         _ => draw_default(f, app, main),
     }
 
@@ -175,5 +177,82 @@ fn draw_minimal_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
 
     // 3. Draw Panels
     library_panel::draw(f, app, columns[0]);
+    lyrics_panel::draw(f, app, columns[1]);
+}
+
+fn draw_default_clean(f: &mut Frame, app: &mut App, area: Rect) {
+    // 1. Center column (40%)
+    let main_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+        ])
+        .split(area);
+
+    let center_column = main_layout[1];
+
+    // 2. Vertical split (rows have SAME width)
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(app.cover_height),
+            Constraint::Min(0),
+        ])
+        .split(center_column);
+
+    // 3. Create a centered area INSIDE the top row (for the image only)
+    let centered_image = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(app.cover_width), // image width only
+            Constraint::Min(0),
+        ])
+        .split(rows[0])[1];
+
+    // ---- DRAW ----
+
+    if app.show_cover {
+        cover_panel::draw(f, app, centered_image);
+    }
+
+    if app.show_player {
+        player_panel::draw(f, app, rows[1]);
+    }
+}
+
+fn draw_default_lyrics_clean(f: &mut Frame, app: &mut App, area: Rect) {
+    // Exact same layout as default: Fixed sidebar width, flexible lyrics
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(app.cover_width), Constraint::Min(0)])
+        .split(area);
+
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+        .split(columns[0]);
+
+    // Centering the image inside its row while keeping the container fixed
+    let centered_image_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(app.cover_width),
+            Constraint::Min(0),
+        ])
+        .split(left_rows[0]);
+
+    if app.show_cover {
+        cover_panel::draw(f, app, centered_image_area[1]);
+    }
+    if app.show_player {
+        // Player uses the full sidebar width (columns[0])
+        player_panel::draw(f, app, left_rows[1]);
+    }
+
+    // Swapped library_panel for lyrics_panel
     lyrics_panel::draw(f, app, columns[1]);
 }

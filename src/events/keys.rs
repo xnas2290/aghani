@@ -67,6 +67,8 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
         k if k == keys.set_layout_1 => Action::SetLayout(0),
         k if k == keys.set_layout_2 => Action::SetLayout(1),
         k if k == keys.set_layout_3 => Action::SetLayout(2),
+        k if k == keys.set_layout_4 => Action::SetLayout(3),
+
         // k if k == keys.set_layout_4 => Action::SetLayout(3),
         k if k == keys.show_lyrics => Action::ShowLyrics,
         k if k == keys.edit_lyrics => Action::EditLyrics, // Shift+L

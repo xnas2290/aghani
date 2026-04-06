@@ -192,9 +192,13 @@ fn run_loop(
             .checked_sub(last_draw.elapsed())
             .unwrap_or(std::time::Duration::ZERO);
 
-        let is_overlay = app.save_mode || app.search_mode;
+        // let is_overlay = app.save_mode || app.search_mode;
 
         // Overlay just opened or closed — clear and redraw immediately
+        let is_overlay = app.save_mode
+            || app.search_mode
+            || app.confirm_dialog.is_some()
+            || app.new_playlist_mode;
         if is_overlay != was_overlay {
             terminal.clear()?;
             terminal.draw(|f| {
@@ -203,6 +207,10 @@ fn run_loop(
             last_draw = std::time::Instant::now();
             was_overlay = is_overlay;
             continue;
+        }
+        if app.needs_full_redraw {
+            terminal.clear()?;
+            app.needs_full_redraw = false;
         }
 
         if crossterm::event::poll(timeout)? {

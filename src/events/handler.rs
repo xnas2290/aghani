@@ -95,10 +95,10 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             Action::ToggleRepeat => app.toggle_repeat(),
             Action::SeekForward => app.seek_forward()?,
             Action::SeekBackward => app.seek_backward()?,
-            Action::SetLayout(i) => app.set_layout(i),
             Action::ShowLyrics => app.toggle_lyrics(),
             Action::CancelDialog => app.confirm_dialog_cancel(),
             Action::ConfirmDialog => app.confirm_dialog_confirm()?,
+            Action::SetLayout(i) => app.set_layout(i),
             Action::EditLyrics => app.edit_lyrics()?,
             Action::None => {}
         }
