@@ -52,24 +52,38 @@ impl MetadataCache {
 
     pub fn insert(&mut self, path: PathBuf, track: &Track) {
         let modified = mtime(&path).unwrap_or(0);
-        self.entries.insert(path, CachedTrack {
-            title: track.title.clone(),
-            artist: track.artist.clone(),
-            album: track.album.clone(),
-            duration_secs: track.duration.as_secs_f64(),
-            has_cover: track.has_cover,
-            bitrate: track.bitrate,
-            sample_rate: track.sample_rate,
-            channels: track.channels,
-            modified,
-            replaygain: track.replaygain,
-        });
+        self.entries.insert(
+            path,
+            CachedTrack {
+                title: track.title.clone(),
+                artist: track.artist.clone(),
+                album: track.album.clone(),
+                duration_secs: track.duration.as_secs_f64(),
+                has_cover: track.has_cover,
+                bitrate: track.bitrate,
+                sample_rate: track.sample_rate,
+                channels: track.channels,
+                modified,
+                replaygain: track.replaygain,
+            },
+        );
     }
 }
 
 pub fn mtime(path: &Path) -> Option<u64> {
-    path.metadata().ok()?
-        .modified().ok()?
-        .duration_since(SystemTime::UNIX_EPOCH).ok()
+    path.metadata()
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
         .map(|d| d.as_secs())
+}
+
+pub fn default_cache_path() -> std::path::PathBuf {
+    let dir = dirs_next::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("aghani");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("metadata.json")
 }

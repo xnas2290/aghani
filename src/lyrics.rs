@@ -37,23 +37,63 @@ impl Lyrics {
         }
     }
 }
+// ── Cache directories ─────────────────────────────────────────────────────────
 
-/// Path for manually added lyrics — stored next to the audio file
-pub fn manual_lyrics_path(track_path: &std::path::Path) -> PathBuf {
-    track_path.with_extension("lrc")
+pub fn cache_dir() -> PathBuf {
+    dirs_next::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("aghani")
+        .join("lyrics")
 }
 
-/// Load lyrics from a .lrc file next to the track (manual override)
+pub fn auto_lyrics_cache_dir() -> PathBuf {
+    let dir = cache_dir().join("auto");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+pub fn manual_lyrics_cache_dir() -> PathBuf {
+    let dir = cache_dir().join("manual");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+// ── Manual lyrics path — stored in cache, NOT next to audio file ──────────────
+
+pub fn manual_lyrics_path(track_path: &std::path::Path) -> PathBuf {
+    let filename = format!("{}.lrc", sanitize_path(track_path));
+    manual_lyrics_cache_dir().join(filename)
+}
+
+fn sanitize_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .collect()
+}
+
 pub fn load_manual(track_path: &std::path::Path) -> Option<Lyrics> {
-    let lrc_path = manual_lyrics_path(track_path);
-    let content = std::fs::read_to_string(&lrc_path).ok()?;
+    let content = std::fs::read_to_string(manual_lyrics_path(track_path)).ok()?;
     parse_lrc(&content)
 }
 
-/// Check if manual lyrics exist for a track
 pub fn has_manual(track_path: &std::path::Path) -> bool {
     manual_lyrics_path(track_path).exists()
 }
+
+// ── Auto lyrics cache path ────────────────────────────────────────────────────
+
+pub fn cache_path(artist: &str, title: &str) -> PathBuf {
+    let filename = format!("{}-{}.lrc", sanitize(artist), sanitize(title));
+    auto_lyrics_cache_dir().join(filename)
+}
+
+
+
+
+
+
+
 
 // ── Improved Encoding ─────────────────────────────────────────────────────────
 
@@ -201,16 +241,7 @@ fn parse_timestamp(s: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(min * 60.0 + sec))
 }
 
-pub fn cache_path(artist: &str, title: &str) -> PathBuf {
-    let cache_dir = dirs_next::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("aghani")
-        .join("lyrics");
-    let _ = std::fs::create_dir_all(&cache_dir);
 
-    let filename = format!("{}-{}.lrc", sanitize(artist), sanitize(title));
-    cache_dir.join(filename)
-}
 
 fn sanitize(s: &str) -> String {
     s.chars()

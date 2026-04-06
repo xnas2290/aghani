@@ -32,6 +32,8 @@ pub enum Action {
     SetLayout(usize),
     ShowLyrics,
     EditLyrics,
+    GotoTop,
+    GotoBottom,
 }
 
 use crate::config::KeysConfig;
@@ -72,6 +74,8 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
         // k if k == keys.set_layout_4 => Action::SetLayout(3),
         k if k == keys.show_lyrics => Action::ShowLyrics,
         k if k == keys.edit_lyrics => Action::EditLyrics, // Shift+L
+        k if k == keys.go_to_top => Action::GotoTop, // Shift+L
+        k if k == keys.go_to_bottom => Action::GotoBottom, // Shift+L
         _ => Action::None,
     }
 }

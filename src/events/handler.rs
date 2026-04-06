@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::events::keys::{Action, map_key_with_config};
+use crate::events::keys::{map_key_with_config, Action};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 // use std::time::Duration;
@@ -100,6 +100,9 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             Action::ConfirmDialog => app.confirm_dialog_confirm()?,
             Action::SetLayout(i) => app.set_layout(i),
             Action::EditLyrics => app.edit_lyrics()?,
+            Action::GotoTop => app.go_to_top(),
+            Action::GotoBottom => app.go_to_bottom(),
+
             Action::None => {}
         }
     }

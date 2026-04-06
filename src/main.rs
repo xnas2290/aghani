@@ -14,19 +14,90 @@ use config::{Config, State};
 mod lyrics;
 use crossterm::{
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use events::handler::handle_events;
 use library::cache::MetadataCache;
-use ratatui::{Terminal, backend::CrosstermBackend};
-use std::sync::{Arc, Mutex, mpsc};
-use std::{env, io};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::sync::{mpsc, Arc, Mutex};
+// use std::{env, io};
+use std::io;
+mod cli;
 
 fn main() -> Result<()> {
-    // Ensure single instance
+    use cli::{ClearTarget, CliAction};
+
+    match cli::parse_args() {
+        CliAction::Help => {
+            cli::print_help();
+            return Ok(());
+        }
+        CliAction::ShowCaches => {
+            cli::show_caches();
+            return Ok(());
+        }
+        CliAction::ClearAllCaches => {
+            cli::clear_caches(ClearTarget::All);
+            return Ok(());
+        }
+        CliAction::ClearManualLyrics => {
+            cli::clear_caches(ClearTarget::ManualLyrics);
+            return Ok(());
+        }
+        CliAction::ClearAutoLyrics => {
+            cli::clear_caches(ClearTarget::AutoLyrics);
+            return Ok(());
+        }
+        CliAction::ClearMusicDataCache => {
+            cli::clear_caches(ClearTarget::MusicData);
+            return Ok(());
+        }
+        CliAction::Run(dir_override) => {
+            // Continue with normal startup
+            run(dir_override)?;
+        }
+    }
+
+    Ok(())
+}
+fn check_dependencies() -> Result<()> {
+    if std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("Error: ffmpeg not found. Please install ffmpeg.");
+        eprintln!("  Ubuntu/Debian: sudo apt install ffmpeg");
+        eprintln!("  Arch:          sudo pacman -S ffmpeg");
+        eprintln!("  macOS:         brew install ffmpeg");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
+    let _ = check_dependencies();
+
+    // Load config FIRST before using it
+    let _config = Config::load()?;
+
+    if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
+        use std::os::unix::io::IntoRawFd;
+        unsafe {
+            libc::dup2(log.into_raw_fd(), 2);
+        }
+    }
+    let config = Config::load()?;
+    let mut state = State::load();
+
+    // Single music_dir — from CLI override or config
+    let music_dir = dir_override.unwrap_or_else(|| config.music_dir.clone());
+    // Remove the or_else args check — CLI is handled before run() is called
+
     let lock_path = "/tmp/aghani.lock";
     ensure_single_instance(lock_path)?;
-    // Redirect stderr so ALSA/ffmpeg noise doesn't bleed into TUI
+
     if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
         use std::os::unix::io::IntoRawFd;
         unsafe {
@@ -34,19 +105,10 @@ fn main() -> Result<()> {
         }
     }
 
-    let config = Config::load()?;
-    let mut state = State::load();
-
-    let music_dir = env::args()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| config.music_dir.clone());
-
     if !music_dir.exists() {
         eprintln!("Directory does not exist: {:?}", music_dir);
         std::process::exit(1);
     }
-
     ui::theme::init_theme(config.colors.clone());
     let (_mpris_state, _mpris_rx) = mpris::start_mpris();
     // Terminal setup
@@ -57,7 +119,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Metadata channel
-    let cache_path = music_dir.join(".aghani-cache.json");
+    let cache_path = library::cache::default_cache_path();
     let cache = Arc::new(Mutex::new(MetadataCache::load(&cache_path)));
     let (meta_tx, meta_rx) = mpsc::channel();
 
@@ -155,7 +217,7 @@ fn ensure_single_instance(lock_path: &str) -> Result<()> {
             let alive = std::path::Path::new(&format!("/proc/{}", pid)).exists();
             if alive {
                 eprintln!("Aghani is already running (pid {})", pid);
-                std::process::exit(1);
+                std::process::exit(0);
             }
             // Process is dead — stale lock, continue
         }

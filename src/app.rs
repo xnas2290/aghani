@@ -3,10 +3,10 @@ use crate::audio::player::Player;
 
 // use crate::audio::player::PlayerCommand;
 use crate::cover::extractor::{decode_cover, load_fallback};
-use crate::library::PlaylistScope;
 use crate::library::playlist::Playlist;
 use crate::library::scanner::scan_directory;
 use crate::library::track::Track;
+use crate::library::PlaylistScope;
 use crate::library::{LibraryScope, LibraryTab};
 use anyhow::Result;
 use image::DynamicImage;
@@ -149,34 +149,69 @@ impl App {
         config: &crate::config::Config,
         // cmd_rx: Receiver<PlayerCommand>,
     ) -> Result<Self> {
+        // let mut player = Player::new()?;
+
+        // let favorites_path = music_dir.join("favorites.m3u");
+        // let mut playlists: Vec<Playlist> = walkdir::WalkDir::new(music_dir)
+        //     .max_depth(2)
+        //     .into_iter()
+        //     .filter_map(|e| e.ok())
+        //     .filter(|e| e.path().extension().map(|x| x == "m3u").unwrap_or(false))
+        //     .filter_map(|e| Playlist::load(e.path()).ok())
+        //     .collect();
+
+        // if !playlists
+        //     .iter()
+        //     .any(|p| p.name.to_lowercase() == "favorites")
+        // {
+        //     let fav = Playlist::new("Favorites".to_string(), Some(favorites_path));
+        //     let _ = fav.save();
+        //     playlists.insert(0, fav);
+        // } else {
+        //     if let Some(i) = playlists
+        //         .iter()
+        //         .position(|p| p.name.to_lowercase() == "favorites")
+        //     {
+        //         let fav = playlists.remove(i);
+        //         playlists.insert(0, fav);
+        //     }
+        // }
         let mut player = Player::new()?;
 
+        // Define the authoritative path for the single favorites playlist
         let favorites_path = music_dir.join("favorites.m3u");
-        let mut playlists: Vec<Playlist> = walkdir::WalkDir::new(music_dir)
+
+        let mut playlists: Vec<Playlist> = walkdir::WalkDir::new(&music_dir)
             .max_depth(2)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "m3u").unwrap_or(false))
+            .filter(|e| {
+                let path = e.path();
+                let is_m3u = path.extension().map(|x| x == "m3u").unwrap_or(false);
+
+                // Ignore any file named "favorites.m3u" regardless of where it is in the walk
+                // This prevents duplicates from being picked up in the main scan
+                let is_favorites = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase() == "favorites.m3u")
+                    .unwrap_or(false);
+
+                is_m3u && !is_favorites
+            })
             .filter_map(|e| Playlist::load(e.path()).ok())
             .collect();
 
-        if !playlists
-            .iter()
-            .any(|p| p.name.to_lowercase() == "favorites")
-        {
+        // Now handle the single, top-level favorites playlist exclusively
+        if favorites_path.exists() {
+            if let Ok(fav) = Playlist::load(&favorites_path) {
+                playlists.insert(0, fav);
+            }
+        } else {
+            // Create it if it doesn't exist
             let fav = Playlist::new("Favorites".to_string(), Some(favorites_path));
             let _ = fav.save();
             playlists.insert(0, fav);
-        } else {
-            if let Some(i) = playlists
-                .iter()
-                .position(|p| p.name.to_lowercase() == "favorites")
-            {
-                let fav = playlists.remove(i);
-                playlists.insert(0, fav);
-            }
         }
-
         let tracks = scan_directory(music_dir)?;
         let selected_index = if tracks.is_empty() { None } else { Some(0) };
         let fallback_cover = load_fallback(Path::new("assets/default_cover.png")).ok();
@@ -1120,7 +1155,7 @@ impl App {
         self.drain_ipc()?;
         self.drain_mpris()?; // ← add this
         self.update_mpris_state(); // keep position in sync
-        // Check if lyrics arrived
+                                   // Check if lyrics arrived
         if let Some(ref rx) = self.lyrics_rx {
             if let Ok(result) = rx.try_recv() {
                 self.lyrics_loading = false;
@@ -1926,6 +1961,143 @@ impl App {
         }
 
         Ok(())
+    }
+    pub fn go_to_top(&mut self) {
+        match self.active_tab {
+            LibraryTab::Songs => {
+                self.selected_index = if self.all_track_indices.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                };
+                self.songs_offset = 0;
+            }
+            LibraryTab::Albums => match &self.album_scope {
+                LibraryScope::All => {
+                    self.album_selected = if self.albums.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    self.albums_offset = 0;
+                }
+                LibraryScope::Album(_) => {
+                    self.scoped_song_selected = if self.scoped_track_indices.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    self.scoped_songs_offset = 0;
+                }
+                _ => {}
+            },
+            LibraryTab::Artists => match &self.artist_scope {
+                LibraryScope::All => {
+                    self.artist_selected = if self.artists.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    self.artists_offset = 0;
+                }
+                LibraryScope::Artist(_) => {
+                    self.artist_scoped_album_selected = if self.scoped_albums.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    self.artist_albums_offset = 0;
+                }
+                _ => {}
+            },
+            LibraryTab::Playlists => match &self.playlist_scope {
+                PlaylistScope::All => {
+                    self.playlist_selected = if self.playlists.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    self.playlist_list_offset = 0;
+                }
+                PlaylistScope::Open(_) => {
+                    self.playlist_song_selected = Some(0);
+                    self.playlist_songs_offset = 0;
+                }
+            },
+        }
+    }
+
+    pub fn go_to_bottom(&mut self) {
+        match self.active_tab {
+            LibraryTab::Songs => {
+                let len = self.all_track_indices.len();
+                if len == 0 {
+                    return;
+                }
+                self.selected_index = Some(len - 1);
+                self.songs_offset = scroll_offset(self.selected_index, 0, self.list_height);
+            }
+            LibraryTab::Albums => match &self.album_scope {
+                LibraryScope::All => {
+                    let len = self.albums.len();
+                    if len == 0 {
+                        return;
+                    }
+                    self.album_selected = Some(len - 1);
+                    self.albums_offset = scroll_offset(self.album_selected, 0, self.list_height);
+                }
+                LibraryScope::Album(_) => {
+                    let len = self.scoped_track_indices.len();
+                    if len == 0 {
+                        return;
+                    }
+                    self.scoped_song_selected = Some(len - 1);
+                    self.scoped_songs_offset =
+                        scroll_offset(self.scoped_song_selected, 0, self.scoped_list_height);
+                }
+                _ => {}
+            },
+            LibraryTab::Artists => match &self.artist_scope {
+                LibraryScope::All => {
+                    let len = self.artists.len();
+                    if len == 0 {
+                        return;
+                    }
+                    self.artist_selected = Some(len - 1);
+                    self.artists_offset = scroll_offset(self.artist_selected, 0, self.list_height);
+                }
+                LibraryScope::Artist(_) => {
+                    let len = self.scoped_albums.len();
+                    if len == 0 {
+                        return;
+                    }
+                    self.artist_scoped_album_selected = Some(len - 1);
+                    self.artist_albums_offset =
+                        scroll_offset(self.artist_scoped_album_selected, 0, self.list_height);
+                }
+                _ => {}
+            },
+            LibraryTab::Playlists => match &self.playlist_scope {
+                PlaylistScope::All => {
+                    let len = self.playlists.len();
+                    if len == 0 {
+                        return;
+                    }
+                    self.playlist_selected = Some(len - 1);
+                    self.playlist_list_offset =
+                        scroll_offset(self.playlist_selected, 0, self.list_height);
+                }
+                PlaylistScope::Open(pi) => {
+                    let len = self.playlists[*pi].track_paths.len();
+                    if len == 0 {
+                        return;
+                    }
+                    self.playlist_song_selected = Some(len - 1);
+                    self.playlist_songs_offset =
+                        scroll_offset(self.playlist_song_selected, 0, self.scoped_list_height);
+                }
+            },
+        }
     }
 }
 
