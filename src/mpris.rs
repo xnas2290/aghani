@@ -10,6 +10,7 @@ pub enum MprisCommand {
     Prev,
     Stop,
     Seek(i64),
+    SetPosition(i64), // absolute position in microseconds  ← add this
     SetVolume(f64),
 }
 
@@ -23,6 +24,7 @@ pub struct MprisUpdate {
     pub playing: bool,
     pub volume: f64,
     pub shuffle: bool,
+    pub cover_url: Option<String>,
 }
 
 impl Default for MprisUpdate {
@@ -31,6 +33,7 @@ impl Default for MprisUpdate {
             title: String::new(),
             artist: String::new(),
             album: String::new(),
+            cover_url: None,
             duration_us: 0,
             position_us: 0,
             playing: false,
@@ -48,6 +51,8 @@ pub fn start_mpris() -> (mpsc::Receiver<MprisCommand>, mpsc::SyncSender<MprisUpd
         let ex = smol::LocalExecutor::new();
         smol::block_on(ex.run(async {
             let player = Player::builder("aghani")
+                .identity("aghani") // ← add this
+                .desktop_entry("aghani") // ← add this
                 .can_play(true)
                 .can_pause(true)
                 .can_go_next(true)
@@ -90,7 +95,10 @@ pub fn start_mpris() -> (mpsc::Receiver<MprisCommand>, mpsc::SyncSender<MprisUpd
             player.connect_set_volume(move |_, vol| {
                 let _ = tx.try_send(MprisCommand::SetVolume(vol));
             });
-
+            let tx = cmd_tx.clone();
+            player.connect_set_position(move |_, _, position| {
+                let _ = tx.try_send(MprisCommand::SetPosition(position.as_micros() as i64));
+            });
             ex.spawn(player.run()).detach();
 
             loop {
@@ -111,6 +119,9 @@ pub fn start_mpris() -> (mpsc::Receiver<MprisCommand>, mpsc::SyncSender<MprisUpd
                         meta.set_artist(Some(vec![upd.artist.clone()]));
                         meta.set_album(Some(upd.album.clone()));
                         meta.set_length(Some(Time::from_micros(upd.duration_us)));
+                        if let Some(ref url) = upd.cover_url {
+                            meta.set_art_url(Some(url.clone()));
+                        }
                     }
 
                     let _ = player.set_playback_status(status).await;

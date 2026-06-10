@@ -301,54 +301,70 @@ impl App {
             // show_lyrics: config.layout.show_lyrics,
         })
     }
-    // pub fn toggle_show_lyrics(&mut self) {
-    //     self.show_lyrics = !self.show_lyrics;
-    // }
-    pub fn drain_mpris(&mut self) -> Result<()> {
-        use crate::mpris::MprisCommand;
 
-        let commands: Vec<MprisCommand> = match &self.mpris_rx {
-            Some(rx) => {
-                let mut cmds = Vec::new();
-                while let Ok(cmd) = rx.try_recv() {
-                    cmds.push(cmd);
-                }
-                cmds
-            }
-            None => return Ok(()),
-        };
 
-        for cmd in commands {
-            match cmd {
-                MprisCommand::Play => {
-                    if self.player.is_paused() {
-                        self.player.resume();
-                    }
-                }
-                MprisCommand::Pause => {
-                    if !self.player.is_paused() {
-                        self.player.pause();
-                    }
-                }
-                MprisCommand::PlayPause => self.toggle_play()?,
-                MprisCommand::Next => self.next_track()?,
-                MprisCommand::Prev => self.prev_track()?,
-                MprisCommand::Stop => self.player.stop(),
-                MprisCommand::Seek(us) => {
-                    let pos = std::time::Duration::from_micros(us.max(0) as u64);
-                    if let Some(track) = self.current_track() {
-                        let path = track.path.clone();
-                        self.player.seek(&path, pos)?;
-                    }
-                }
-                MprisCommand::SetVolume(v) => self.set_volume(v as f32),
+   pub fn drain_mpris(&mut self) -> Result<()> {
+    use crate::mpris::MprisCommand;
+
+    let commands: Vec<MprisCommand> = match &self.mpris_rx {
+        Some(rx) => {
+            let mut cmds = Vec::new();
+            while let Ok(cmd) = rx.try_recv() {
+                cmds.push(cmd);
             }
+            cmds
         }
+        None => return Ok(()),
+    };
 
-        // Update shared MPRIS state so clients see current info
-        self.update_mpris_state();
-        Ok(())
+    for cmd in commands {
+        match cmd {
+            MprisCommand::Play => {
+                if self.player.is_paused() { self.player.resume(); }
+            }
+            MprisCommand::Pause => {
+                if !self.player.is_paused() { self.player.pause(); }
+            }
+            MprisCommand::PlayPause => self.toggle_play()?,
+            MprisCommand::Next      => self.next_track()?,
+            MprisCommand::Prev      => self.prev_track()?,
+            MprisCommand::Stop      => self.player.stop(),
+
+            // Relative seek — offset in microseconds (can be negative)
+            MprisCommand::Seek(offset_us) => {
+                let current = self.player.elapsed();
+                let offset  = std::time::Duration::from_micros(offset_us.unsigned_abs());
+                let new_pos = if offset_us >= 0 {
+                    current + offset
+                } else {
+                    current.saturating_sub(offset)
+                };
+                if let Some(track) = self.current_track() {
+                    if new_pos <= track.duration {
+                        let path = track.path.clone();
+                        self.player.seek(&path, new_pos)?;
+                    }
+                }
+            }
+
+            // Absolute position — position in microseconds from start
+            MprisCommand::SetPosition(pos_us) => {
+                let new_pos = std::time::Duration::from_micros(pos_us as u64);
+                if let Some(track) = self.current_track() {
+                    if new_pos <= track.duration {
+                        let path = track.path.clone();
+                        self.player.seek(&path, new_pos)?;
+                    }
+                }
+            }
+
+            MprisCommand::SetVolume(v) => self.set_volume(v as f32),
+        }
     }
+
+    self.update_mpris_state();
+    Ok(())
+}
 
     fn update_mpris_state(&self) {
         use crate::mpris::MprisUpdate;
@@ -357,6 +373,12 @@ impl App {
             Some(t) => t,
             None => return,
         };
+
+        let cover_url = self.current_index.and_then(|idx| {
+            // Re-read cover from tags and save to temp file
+            let track: &Track = &self.tracks[idx];
+            extract_cover_to_file(&track.path)
+        });
 
         let upd = if let Some(track) = self.current_track() {
             MprisUpdate {
@@ -368,9 +390,10 @@ impl App {
                 playing: !self.player.is_paused(),
                 volume: self.player.volume as f64,
                 shuffle: self.shuffle,
+                cover_url,
             }
         } else {
-            MprisUpdate::default() // stopped state
+            MprisUpdate::default()
         };
 
         let _ = tx.try_send(upd);
@@ -379,9 +402,11 @@ impl App {
     pub fn set_volume(&mut self, vol: f32) {
         self.player.set_volume(vol);
     }
+
     pub fn toggle_repeat(&mut self) {
         self.repeat = self.repeat.next();
     }
+
     pub fn restore_session_from_state(&mut self, state: &crate::config::State) -> Result<()> {
         if let Some(vol) = state.volume {
             self.player.set_volume(vol);
@@ -424,6 +449,7 @@ impl App {
 
         Ok(())
     }
+
     pub fn playlist_track_indices(&self, playlist_idx: usize) -> Vec<usize> {
         let pl = &self.playlists[playlist_idx];
         pl.track_paths
@@ -438,22 +464,6 @@ impl App {
         self.playlist_song_selected = if resolved.is_empty() { None } else { Some(0) };
         self.playlist_songs_offset = 0;
     }
-
-    // pub fn delete_from_playlist(&mut self) -> Result<()> {
-    //     if let PlaylistScope::Open(pi) = self.playlist_scope {
-    //         if let Some(si) = self.playlist_song_selected {
-    //             self.playlists[pi].remove_track(si);
-    //             self.playlists[pi].save()?;
-    //             let len = self.playlists[pi].track_paths.len();
-    //             self.playlist_song_selected = if len == 0 {
-    //                 None
-    //             } else {
-    //                 Some(si.min(len - 1))
-    //             };
-    //         }
-    //     }
-    //     Ok(())
-    // }
 
     // ── Playlist management ───────────────────────────────────────────────────────
 
@@ -607,6 +617,7 @@ impl App {
             self.layout_mode.push_str("_lyrics");
         }
     }
+
     pub fn open_save_mode(&mut self) {
         let track_path = match self.active_tab {
             LibraryTab::Songs => self
@@ -775,6 +786,7 @@ impl App {
         }
         Ok(())
     }
+
     pub fn drain_metadata(&mut self) {
         let mut changed = false;
         let mut count = 0;
@@ -928,6 +940,7 @@ impl App {
             let _ = tx.send(result);
         });
     }
+
     pub fn play_selected(&mut self) -> Result<()> {
         match self.active_tab {
             LibraryTab::Songs => {
@@ -1365,6 +1378,7 @@ impl App {
     pub fn volume_up(&mut self) {
         self.player.volume_up();
     }
+
     pub fn volume_down(&mut self) {
         self.player.volume_down();
     }
@@ -1740,6 +1754,7 @@ impl App {
         }
         Ok(())
     }
+
     pub fn go_to_playing(&mut self) {
         let ci = match self.current_index {
             Some(i) => i,
@@ -1816,106 +1831,6 @@ impl App {
             }
         }
     }
-    // pub fn go_to_playing(&mut self) {
-    //     let ci = match self.current_index {
-    //         Some(i) => i,
-    //         None => return,
-    //     };
-
-    //     // Helper to calculate an offset that centers the index
-    //     let calculate_center_offset = |index: usize, height: usize| -> usize {
-    //         if index > height / 2 {
-    //             index - (height / 2)
-    //         } else {
-    //             0
-    //         }
-    //     };
-
-    //     match &self.play_context.clone() {
-    //         PlayContext::AllTracks => {
-    //             self.active_tab = LibraryTab::Songs;
-    //             self.selected_index = Some(ci);
-    //             // Center the track
-    //             self.songs_offset = calculate_center_offset(ci, self.list_height);
-    //         }
-    //         PlayContext::Album => {
-    //             self.active_tab = LibraryTab::Albums;
-    //             if let LibraryScope::Album(_) = &self.album_scope {
-    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
-    //                     self.scoped_song_selected = Some(pos);
-    //                     // Center the track within the album view
-    //                     self.scoped_songs_offset = calculate_center_offset(pos, self.list_height);
-    //                 }
-    //             } else {
-    //                 let album = self.tracks[ci].album.clone();
-    //                 self.enter_album(album);
-    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
-    //                     self.scoped_song_selected = Some(pos);
-    //                     self.scoped_songs_offset = calculate_center_offset(pos, self.list_height);
-    //                 }
-    //             }
-    //         }
-    //         PlayContext::Playlist(pi) => {
-    //             let pi = *pi;
-    //             self.active_tab = LibraryTab::Playlists;
-    //             self.playlist_scope = PlaylistScope::Open(pi);
-    //             self.playlist_selected = Some(pi);
-
-    //             let indices = self.playlist_track_indices(pi);
-    //             if let Some(pos) = indices.iter().position(|&i| i == ci) {
-    //                 self.playlist_song_selected = Some(pos);
-    //                 // Center the track within the playlist view
-    //                 self.playlist_songs_offset = calculate_center_offset(pos, self.list_height);
-    //             }
-    //         }
-    //     }
-    // }
-
-    // pub fn go_to_playing(&mut self) {
-    //     let ci = match self.current_index {
-    //         Some(i) => i,
-    //         None => return,
-    //     };
-
-    //     match &self.play_context.clone() {
-    //         PlayContext::AllTracks => {
-    //             self.active_tab = LibraryTab::Songs;
-    //             self.selected_index = Some(ci);
-    //             self.songs_offset = scroll_offset(Some(ci), 0, self.list_height);
-    //         }
-    //         PlayContext::Album => {
-    //             self.active_tab = LibraryTab::Albums;
-    //             // Make sure album scope is open to the right album
-    //             if let LibraryScope::Album(_) = &self.album_scope {
-    //                 // already in correct scope — find position within scoped list
-    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
-    //                     self.scoped_song_selected = Some(pos);
-    //                     self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
-    //                 }
-    //             } else {
-    //                 // scope was cleared — reopen the album from the track's metadata
-    //                 let album = self.tracks[ci].album.clone();
-    //                 self.enter_album(album);
-    //                 if let Some(pos) = self.scoped_track_indices.iter().position(|&i| i == ci) {
-    //                     self.scoped_song_selected = Some(pos);
-    //                     self.scoped_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
-    //                 }
-    //             }
-    //         }
-    //         PlayContext::Playlist(pi) => {
-    //             let pi = *pi;
-    //             self.active_tab = LibraryTab::Playlists;
-    //             self.playlist_scope = PlaylistScope::Open(pi);
-    //             self.playlist_selected = Some(pi);
-    //             // Find position within playlist
-    //             let indices = self.playlist_track_indices(pi);
-    //             if let Some(pos) = indices.iter().position(|&i| i == ci) {
-    //                 self.playlist_song_selected = Some(pos);
-    //                 self.playlist_songs_offset = scroll_offset(Some(pos), 0, self.list_height);
-    //             }
-    //         }
-    //     }
-    // }
 
     pub fn edit_lyrics(&mut self) -> Result<()> {
         let track = match self.current_track() {
@@ -2101,6 +2016,22 @@ impl App {
     }
 }
 
+fn extract_cover_to_file(track_path: &std::path::Path) -> Option<String> {
+    use lofty::prelude::*;
+    use lofty::read_from_path;
+
+    let tagged = read_from_path(track_path).ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    let pic = tag.pictures().first()?;
+
+    // Save to temp file
+    let tmp_path = "/tmp/aghani-cover.jpg";
+    std::fs::write(tmp_path, pic.data()).ok()?;
+
+    // Return as file:// URL
+    Some(format!("file://{}", tmp_path))
+}
+
 pub fn scroll_offset(
     selected: Option<usize>,
     current_offset: usize,
@@ -2118,6 +2049,7 @@ pub fn scroll_offset(
         current_offset
     }
 }
+
 pub fn center_offset(selected: Option<usize>, visible_height: usize) -> usize {
     let sel = match selected {
         Some(s) => s,
@@ -2129,6 +2061,7 @@ pub fn center_offset(selected: Option<usize>, visible_height: usize) -> usize {
         sel - visible_height / 2
     }
 }
+
 fn rand_usize(state: &mut u64) -> usize {
     *state = state
         .wrapping_mul(6364136223846793005)
@@ -2177,6 +2110,7 @@ fn build_lrc_template(track: &crate::library::track::Track) -> String {
         track.title, track.artist, track.album
     )
 }
+
 fn which(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)

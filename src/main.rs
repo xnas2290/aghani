@@ -77,6 +77,14 @@ fn check_dependencies() -> Result<()> {
     Ok(())
 }
 fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
+    let pid = std::process::id();
+    std::panic::set_hook(Box::new(move |info| {
+        // Kill any ffmpeg children on panic
+        let _ = std::process::Command::new("pkill")
+            .args(["-P", &pid.to_string()])
+            .status();
+        eprintln!("Panic: {}", info);
+    }));
     let _ = check_dependencies();
 
     // Load config FIRST before using it
@@ -188,6 +196,7 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     } else {
         None
     };
+    app.player.stop(); // kill ffmpeg process
     state.last_tab = Some(format!("{:?}", app.active_tab));
     state.volume = Some(app.player.volume);
     let _ = state.save();
