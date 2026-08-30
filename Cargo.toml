@@ -12,6 +12,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 readme = "README.md"
 
 [dependencies]
+unicode-bidi = "0.3"
 anyhow = "1.0.102"
 crossterm = "0.29.0"
 dirs-next = "2.0.0"
