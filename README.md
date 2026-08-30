@@ -2,7 +2,7 @@
 
 A fast, feature-rich terminal music player with album art, lyrics, and MPRIS support.
 
-![aghani screenshot](screenshot.png)
+![aghani screenshot](Screenshot.png)
 
 ## Features
 
