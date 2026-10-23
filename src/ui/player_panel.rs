@@ -433,7 +433,7 @@ fn make_progress_bar(pct: u32, width: usize) -> String {
 
     // 2. Add the smooth fractional transition
     if current_width < width && fraction_idx > 0 {
-        bar.push_str(fragments[fraction_idx]);
+        bar.push_str(fragments.get(fraction_idx).copied().unwrap_or(""));
         current_width += 1;
     }
 

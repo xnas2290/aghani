@@ -8,6 +8,51 @@ use ratatui::{
     Frame,
 };
 use unicode_bidi::BidiInfo;
+
+pub fn handle_mouse_click(app: &mut App, area: Rect, x: u16, y: u16) -> anyhow::Result<bool> {
+    if app.lyrics_loading || app.lyrics_error || x < area.x || y < area.y {
+        return Ok(false);
+    }
+
+    let lyrics = match &app.lyrics {
+        Some(lyrics) => lyrics,
+        None => return Ok(false),
+    };
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    if x >= inner.x + inner.width || y >= inner.y + inner.height {
+        return Ok(false);
+    }
+
+    let max_w = inner.width.saturating_sub(3) as usize;
+    let current = lyrics.current_line(app.player.elapsed()).unwrap_or(0);
+    let mut current_flat_idx = 0usize;
+    let mut flat_idx = 0usize;
+    for (index, line) in lyrics.lines.iter().enumerate() {
+        let line_count = wrap_text(&line.text, max_w).len();
+        if index == current {
+            current_flat_idx = flat_idx;
+        }
+        flat_idx += line_count;
+    }
+
+    let height = inner.height as usize;
+    let offset = if current_flat_idx < height / 2 {
+        0
+    } else {
+        current_flat_idx - height / 2
+    };
+    let clicked_flat_idx = offset + (y - inner.y) as usize;
+    let mut flat_idx = 0usize;
+    for line in &lyrics.lines {
+        let line_count = wrap_text(&line.text, max_w).len();
+        if clicked_flat_idx < flat_idx + line_count {
+            app.seek_to_lyric(line.time)?;
+            return Ok(true);
+        }
+        flat_idx += line_count;
+    }
+    Ok(false)
+}
 // fn prepare_text(text: &str) -> String {
 //     if is_rtl(text) {
 //         // Reverse the string for RTL display in LTR terminal

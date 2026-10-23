@@ -68,7 +68,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let list = List::new(items)
         .highlight_style(Theme::highlight())
-        .highlight_symbol("› ");
+        .highlight_symbol("");
     f.render_stateful_widget(list, chunks[0], &mut state);
 
     let hint = Paragraph::new(Line::from(Span::styled(

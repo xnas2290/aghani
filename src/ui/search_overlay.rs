@@ -83,8 +83,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .map(|r| match r {
                 SearchResult::Track(ti) => {
                     let t = &app.tracks[*ti];
-                    let is_playing = app.current_index == Some(*ti);
-                    let icon = if is_playing { "▶ " } else { "  " };
+                    let icon = "  ";
                     ListItem::new(Line::from(vec![
                         Span::styled(icon, Theme::accent()),
                         Span::styled("♪ ", Theme::dim()),
@@ -126,7 +125,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.render_stateful_widget(
             List::new(items)
                 .highlight_style(Theme::highlight())
-                .highlight_symbol("› "),
+                .highlight_symbol(""),
             chunks[2],
             &mut state,
         );

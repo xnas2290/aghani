@@ -1,15 +1,57 @@
 use crate::app::App;
 use crate::events::keys::{map_key_with_config, Action};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 // use std::time::Duration;
 
 pub fn handle_events(app: &mut App) -> Result<bool> {
     if !crossterm::event::poll(std::time::Duration::from_millis(0))? {
         return Ok(false);
     }
-    if let Event::Key(key) = event::read()? {
+    match event::read()? {
+        Event::Mouse(mouse) => {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => app.select_prev(),
+                MouseEventKind::ScrollDown => app.select_next(),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let size = crossterm::terminal::size()?;
+                    let terminal_area = ratatui::layout::Rect::new(0, 0, size.0, size.1);
+                    let mut handled = false;
+                    if let Some(area) = crate::ui::layout::library_area(app, terminal_area) {
+                        let double_click = app.is_double_mouse_click(mouse.column, mouse.row);
+                        let clicked_item = crate::ui::library_panel::handle_mouse_click(
+                            app,
+                            area,
+                            mouse.column,
+                            mouse.row,
+                        );
+                        if double_click && clicked_item && mouse.row != area.y + 1 {
+                            app.activate_selected()?;
+                        }
+                        handled = clicked_item;
+                    }
+                    if !handled {
+                        if let Some(area) = crate::ui::layout::lyrics_area(app, terminal_area) {
+                        crate::ui::lyrics_panel::handle_mouse_click(
+                            app,
+                            area,
+                            mouse.column,
+                            mouse.row,
+                        )?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+        Event::Key(key) => {
         if key.kind == KeyEventKind::Release {
+            // Crossterm sends release events separately from the press/repeat
+            // events. Commit the accumulated target when seeking ends.
+            if matches!(key.code, KeyCode::Left | KeyCode::Right) {
+                app.finish_seek()?;
+            }
             return Ok(false);
         }
 
@@ -70,6 +112,13 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
         }
 
         // ── Normal input ──────────────────────────────────────────────────────
+        if matches!(key.code, KeyCode::Left | KeyCode::Right)
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        {
+            app.update_seek(key.code == KeyCode::Right);
+            return Ok(false);
+        }
+
         let action = map_key_with_config(key, &app.keys);
         match action {
             Action::Quit => return Ok(true),
@@ -102,9 +151,13 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             Action::EditLyrics => app.edit_lyrics()?,
             Action::GotoTop => app.go_to_top(),
             Action::GotoBottom => app.go_to_bottom(),
+            Action::MoveToTop => app.move_selected_song(false)?,
+            Action::MoveToBottom => app.move_selected_song(true)?,
 
             Action::None => {}
         }
+        }
+        _ => {}
     }
     Ok(false)
 }

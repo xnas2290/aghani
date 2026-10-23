@@ -11,7 +11,7 @@ use crate::library::{LibraryScope, LibraryTab};
 use anyhow::Result;
 use image::DynamicImage;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 // use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +70,8 @@ pub struct App {
     pub playlist_scope: PlaylistScope,
     pub playlist_song_selected: Option<usize>,
     pub playlists: Vec<Playlist>,
+    pub history: Vec<PathBuf>,
+    pub play_counts: HashMap<PathBuf, u64>,
     pub save_mode: bool,
     pub save_candidates: Vec<usize>,
     pub save_selected: usize,
@@ -140,6 +142,7 @@ pub struct App {
     pub lyrics_error: bool,
     lyrics_rx: Option<std::sync::mpsc::Receiver<Option<crate::lyrics::Lyrics>>>,
     pub needs_full_redraw: bool,
+    last_mouse_click: Option<(u16, u16, std::time::Instant)>,
 }
 
 impl App {
@@ -212,6 +215,14 @@ impl App {
             let _ = fav.save();
             playlists.insert(0, fav);
         }
+        playlists.retain(|playlist| {
+            !matches!(
+                playlist.name.to_lowercase().as_str(),
+                "history" | "most played"
+            )
+        });
+        playlists.push(Playlist::new("History".to_string(), None));
+        playlists.push(Playlist::new("Most Played".to_string(), None));
         let tracks = scan_directory(music_dir)?;
         let selected_index = if tracks.is_empty() { None } else { Some(0) };
         let fallback_cover = load_fallback(Path::new("assets/default_cover.png")).ok();
@@ -256,6 +267,8 @@ impl App {
             save_candidates: vec![],
             save_selected: 0,
             playlists,
+            history: Vec::new(),
+            play_counts: HashMap::new(),
             play_context: PlayContext::AllTracks,
             shuffle: false,
             shuffle_order: vec![],
@@ -298,80 +311,84 @@ impl App {
             lyrics_error: false,
             lyrics_rx: None,
             needs_full_redraw: false,
+            last_mouse_click: None,
             // show_lyrics: config.layout.show_lyrics,
         })
     }
 
+    pub fn drain_mpris(&mut self) -> Result<()> {
+        use crate::mpris::MprisCommand;
 
-   pub fn drain_mpris(&mut self) -> Result<()> {
-    use crate::mpris::MprisCommand;
-
-    let commands: Vec<MprisCommand> = match &self.mpris_rx {
-        Some(rx) => {
-            let mut cmds = Vec::new();
-            while let Ok(cmd) = rx.try_recv() {
-                cmds.push(cmd);
+        let commands: Vec<MprisCommand> = match &self.mpris_rx {
+            Some(rx) => {
+                let mut cmds = Vec::new();
+                while let Ok(cmd) = rx.try_recv() {
+                    cmds.push(cmd);
+                }
+                cmds
             }
-            cmds
-        }
-        None => return Ok(()),
-    };
+            _none => return Ok(()),
+        };
 
-    for cmd in commands {
-        match cmd {
-            MprisCommand::Play => {
-                if self.player.is_paused() { self.player.resume(); }
-            }
-            MprisCommand::Pause => {
-                if !self.player.is_paused() { self.player.pause(); }
-            }
-            MprisCommand::PlayPause => self.toggle_play()?,
-            MprisCommand::Next      => self.next_track()?,
-            MprisCommand::Prev      => self.prev_track()?,
-            MprisCommand::Stop      => self.player.stop(),
-
-            // Relative seek — offset in microseconds (can be negative)
-            MprisCommand::Seek(offset_us) => {
-                let current = self.player.elapsed();
-                let offset  = std::time::Duration::from_micros(offset_us.unsigned_abs());
-                let new_pos = if offset_us >= 0 {
-                    current + offset
-                } else {
-                    current.saturating_sub(offset)
-                };
-                if let Some(track) = self.current_track() {
-                    if new_pos <= track.duration {
-                        let path = track.path.clone();
-                        self.player.seek(&path, new_pos)?;
+        for cmd in commands {
+            match cmd {
+                MprisCommand::Play => {
+                    if self.player.is_paused() {
+                        self.player.resume();
                     }
                 }
-            }
-
-            // Absolute position — position in microseconds from start
-            MprisCommand::SetPosition(pos_us) => {
-                let new_pos = std::time::Duration::from_micros(pos_us as u64);
-                if let Some(track) = self.current_track() {
-                    if new_pos <= track.duration {
-                        let path = track.path.clone();
-                        self.player.seek(&path, new_pos)?;
+                MprisCommand::Pause => {
+                    if !self.player.is_paused() {
+                        self.player.pause();
                     }
                 }
-            }
+                MprisCommand::PlayPause => self.toggle_play()?,
+                MprisCommand::Next => self.next_track()?,
+                MprisCommand::Prev => self.prev_track()?,
+                MprisCommand::Stop => self.player.stop(),
 
-            MprisCommand::SetVolume(v) => self.set_volume(v as f32),
+                // Relative seek — offset in microseconds (can be negative)
+                MprisCommand::Seek(offset_us) => {
+                    let current = self.player.elapsed();
+                    let offset = std::time::Duration::from_micros(offset_us.unsigned_abs());
+                    let new_pos = if offset_us >= 0 {
+                        current + offset
+                    } else {
+                        current.saturating_sub(offset)
+                    };
+                    if let Some(track) = self.current_track() {
+                        if new_pos <= track.duration {
+                            let path = track.path.clone();
+                            self.player.seek(&path, new_pos)?;
+                        }
+                    }
+                }
+
+                // Absolute position — position in microseconds from start
+                MprisCommand::SetPosition(pos_us) => {
+                    let new_pos = std::time::Duration::from_micros(pos_us as u64);
+                    if let Some(track) = self.current_track() {
+                        if new_pos <= track.duration {
+                            let path = track.path.clone();
+                            self.player.seek(&path, new_pos)?;
+                        }
+                    }
+                }
+
+                MprisCommand::SetVolume(v) => self.set_volume(v as f32),
+            }
         }
+
+        self.update_mpris_state();
+        Ok(())
     }
-
-    self.update_mpris_state();
-    Ok(())
-}
 
     fn update_mpris_state(&self) {
         use crate::mpris::MprisUpdate;
 
         let tx = match &self.mpris_update_tx {
             Some(t) => t,
-            None => return,
+            _none => return,
         };
 
         let cover_url = self.current_index.and_then(|idx| {
@@ -387,7 +404,7 @@ impl App {
                 album: track.album.clone(),
                 duration_us: track.duration.as_micros() as i64,
                 position_us: self.player.elapsed().as_micros() as i64,
-                playing: !self.player.is_paused(),
+                playing: self.player.is_paused() == false,
                 volume: self.player.volume as f64,
                 shuffle: self.shuffle,
                 cover_url,
@@ -408,6 +425,9 @@ impl App {
     }
 
     pub fn restore_session_from_state(&mut self, state: &crate::config::State) -> Result<()> {
+        self.history = state.history.clone();
+        self.play_counts = state.play_counts.clone();
+        self.refresh_generated_playlists();
         if let Some(vol) = state.volume {
             self.player.set_volume(vol);
         }
@@ -522,7 +542,10 @@ impl App {
             PlaylistScope::All => {
                 if let Some(pi) = self.playlist_selected {
                     // Protect favorites
-                    if self.playlists[pi].name.to_lowercase() == "favorites" {
+                    if matches!(
+                        self.playlists[pi].name.to_lowercase().as_str(),
+                        "favorites" | "history" | "most played"
+                    ) {
                         return;
                     }
                     self.confirm_dialog = Some(ConfirmDialog {
@@ -555,7 +578,7 @@ impl App {
     pub fn confirm_dialog_confirm(&mut self) -> Result<()> {
         let action = match self.confirm_dialog.take() {
             Some(d) => d.action,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
 
         match action {
@@ -628,7 +651,7 @@ impl App {
         };
         let track_path = match track_path {
             Some(p) => p,
-            None => return,
+            _none => return,
         };
 
         self.save_candidates = self
@@ -648,7 +671,7 @@ impl App {
     }
 
     pub fn confirm_save(&mut self) -> Result<()> {
-        if !self.save_mode {
+        if self.save_mode == false {
             return Ok(());
         }
 
@@ -661,7 +684,7 @@ impl App {
         };
         let track_path = match track_path {
             Some(p) => p,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
 
         if let Some(&pi) = self.save_candidates.get(self.save_selected) {
@@ -691,7 +714,7 @@ impl App {
                 }
                 cmds
             }
-            None => return Ok(()),
+            _none => return Ok(()),
         };
 
         // Now process — no borrow conflict
@@ -814,7 +837,7 @@ impl App {
             self.loading = false;
         }
 
-        if changed && (!self.loading || self.loaded_count % 100 == 0) {
+        if changed && (self.loading == false || self.loaded_count % 100 == 0) {
             self.rebuild_albums_and_artists();
         }
     }
@@ -910,12 +933,41 @@ impl App {
         }
         self.current_index = Some(index);
         let path = self.tracks[index].path.clone();
+        self.record_play(&path);
         let gain = self.tracks[index].replaygain;
         self.player.play_with_gain(&path, gain)?;
         self.refresh_cover(index)?;
         self.update_mpris_state();
         self.fetch_lyrics(index);
         Ok(())
+    }
+
+    fn record_play(&mut self, path: &Path) {
+        self.history.retain(|item| item != path);
+        self.history.insert(0, path.to_path_buf());
+        self.history.truncate(100);
+        *self.play_counts.entry(path.to_path_buf()).or_insert(0) += 1;
+        self.refresh_generated_playlists();
+    }
+
+    fn refresh_generated_playlists(&mut self) {
+        let history = self.history.clone();
+        let mut most_played: Vec<PathBuf> = self.play_counts.keys().cloned().collect();
+        most_played.sort_by(|a, b| {
+            self.play_counts
+                .get(b)
+                .cmp(&self.play_counts.get(a))
+                .then_with(|| a.cmp(b))
+        });
+        most_played.truncate(100);
+
+        for playlist in &mut self.playlists {
+            match playlist.name.as_str() {
+                "History" => playlist.track_paths = history.clone(),
+                "Most Played" => playlist.track_paths = most_played.clone(),
+                _ => {}
+            }
+        }
     }
 
     fn fetch_lyrics(&mut self, index: usize) {
@@ -1017,6 +1069,88 @@ impl App {
         Ok(())
     }
 
+    pub fn activate_selected(&mut self) -> Result<()> {
+        let selected_track = match self.active_tab {
+            LibraryTab::Songs => self
+                .selected_index
+                .and_then(|index| self.all_track_indices.get(index).copied()),
+            LibraryTab::Albums => match &self.album_scope {
+                LibraryScope::Album(_) => self
+                    .scoped_song_selected
+                    .and_then(|index| self.scoped_track_indices.get(index).copied()),
+                _ => None,
+            },
+            LibraryTab::Playlists => match &self.playlist_scope {
+                PlaylistScope::Open(playlist_index) => self
+                    .playlist_song_selected
+                    .and_then(|index| self.playlist_track_indices(*playlist_index).get(index).copied()),
+                PlaylistScope::All => None,
+            },
+            LibraryTab::Artists => None,
+        };
+
+        if selected_track.is_some() && selected_track == self.current_index {
+            self.player.toggle_pause();
+            Ok(())
+        } else {
+            self.play_selected()
+        }
+    }
+
+    pub fn seek_to_lyric(&mut self, time: std::time::Duration) -> Result<()> {
+        let path = match self.current_track() {
+            Some(track) => track.path.clone(),
+            None => return Ok(()),
+        };
+        self.player.seek(&path, time)?;
+        self.player.finish_seek()
+    }
+
+    pub fn move_selected_song(&mut self, to_bottom: bool) -> Result<()> {
+        let (playlist_index, selected_index) = match &self.playlist_scope {
+            PlaylistScope::Open(index) => (*index, self.playlist_song_selected),
+            PlaylistScope::All => return Ok(()),
+        };
+        let selected_index = match selected_index {
+            Some(index) => index,
+            None => return Ok(()),
+        };
+        let playlist_name = self.playlists[playlist_index].name.to_lowercase();
+        if matches!(playlist_name.as_str(), "favorites" | "history" | "most played") {
+            return Ok(());
+        }
+
+        let track_indices = self.playlist_track_indices(playlist_index);
+        let real_index = match track_indices.get(selected_index) {
+            Some(index) => *index,
+            None => return Ok(()),
+        };
+        let path = self.tracks[real_index].path.clone();
+        let raw_index = match self.playlists[playlist_index]
+            .track_paths
+            .iter()
+            .position(|item| item == &path)
+        {
+            Some(index) => index,
+            None => return Ok(()),
+        };
+        let path = self.playlists[playlist_index].track_paths.remove(raw_index);
+        let target = if to_bottom {
+            self.playlists[playlist_index].track_paths.len()
+        } else {
+            0
+        };
+        self.playlists[playlist_index].track_paths.insert(target, path);
+        self.playlists[playlist_index].save()?;
+        self.playlist_song_selected = Some(target);
+        self.playlist_songs_offset = scroll_offset(
+            self.playlist_song_selected,
+            self.playlist_songs_offset,
+            self.scoped_list_height,
+        );
+        Ok(())
+    }
+
     pub fn toggle_play(&mut self) -> Result<()> {
         if self.current_index.is_none() {
             let idx = self.selected_index.unwrap_or(0);
@@ -1031,7 +1165,7 @@ impl App {
         // If nothing is playing, always allow
         let current = match self.current_index {
             Some(c) => c,
-            None => return true,
+            _none => return true,
         };
 
         // Get what's actually selected in current tab
@@ -1076,7 +1210,7 @@ impl App {
             .and_then(|ci| indices.iter().position(|&i| i == ci))
         {
             Some(pos) => pos,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
 
         let was_in_sync = self.is_selection_in_sync();
@@ -1100,7 +1234,7 @@ impl App {
             .and_then(|ci| indices.iter().position(|&i| i == ci))
         {
             Some(pos) => pos,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
 
         let was_in_sync = self.is_selection_in_sync();
@@ -1164,6 +1298,7 @@ impl App {
     }
 
     pub fn tick(&mut self) -> Result<()> {
+        self.finish_seek_if_idle()?;
         self.drain_metadata();
         self.drain_ipc()?;
         self.drain_mpris()?; // ← add this
@@ -1183,6 +1318,7 @@ impl App {
                     // Replay same track
                     if let Some(idx) = self.current_index {
                         let path = self.tracks[idx].path.clone();
+                        self.record_play(&path);
                         self.player.play(&path)?;
                     }
                 }
@@ -1216,7 +1352,7 @@ impl App {
                 }
                 self.selected_index = Some(match self.selected_index {
                     Some(i) => (i + 1) % len,
-                    None => 0,
+                    _none => 0,
                 });
                 self.songs_offset =
                     scroll_offset(self.selected_index, self.songs_offset, self.list_height);
@@ -1234,7 +1370,7 @@ impl App {
                     }
                     self.scoped_song_selected = Some(match self.scoped_song_selected {
                         Some(i) => (i + 1) % len,
-                        None => 0,
+                        _none => 0,
                     });
                     self.scoped_songs_offset = scroll_offset(
                         self.scoped_song_selected,
@@ -1300,7 +1436,7 @@ impl App {
                             i - 1
                         }
                     }
-                    None => 0,
+                    _none => 0,
                 });
                 self.songs_offset =
                     scroll_offset(self.selected_index, self.songs_offset, self.list_height);
@@ -1324,7 +1460,7 @@ impl App {
                                 i - 1
                             }
                         }
-                        None => 0,
+                        _none => 0,
                     });
                     self.scoped_songs_offset = scroll_offset(
                         self.scoped_song_selected,
@@ -1409,7 +1545,7 @@ impl App {
     pub fn tab_next(&mut self) {
         let tabs = LibraryTab::all();
         let next = (self.active_tab.index() + 1) % tabs.len();
-        self.active_tab = tabs[next].clone();
+        self.active_tab = tabs.get(next).unwrap().clone();
         self.ensure_selection();
     }
 
@@ -1421,8 +1557,25 @@ impl App {
         } else {
             current - 1
         };
-        self.active_tab = tabs[prev].clone();
+        self.active_tab = tabs.get(prev).unwrap().clone();
         self.ensure_selection();
+    }
+
+    pub fn select_tab(&mut self, tab: LibraryTab) {
+        self.active_tab = tab;
+        self.ensure_selection();
+    }
+
+    pub fn is_double_mouse_click(&mut self, x: u16, y: u16) -> bool {
+        let now = std::time::Instant::now();
+        let is_double = self
+            .last_mouse_click
+            .map(|(last_x, last_y, last_time)| {
+                last_x == x && last_y == y && last_time.elapsed().as_millis() <= 400
+            })
+            .unwrap_or(false);
+        self.last_mouse_click = Some((x, y, now));
+        is_double
     }
 
     fn ensure_selection(&mut self) {
@@ -1506,14 +1659,28 @@ impl App {
         };
         let track_path = match track_path {
             Some(p) => p,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
-        if let Some(fav) = self.playlists.first_mut() {
-            if fav.add_track(track_path) {
-                fav.save()?;
+        if let Some(fav) = self
+            .playlists
+            .iter_mut()
+            .find(|playlist| playlist.name.eq_ignore_ascii_case("favorites"))
+        {
+            if let Some(index) = fav.track_paths.iter().position(|path| path == &track_path) {
+                fav.remove_track(index);
+            } else {
+                fav.add_track(track_path);
             }
+            fav.save()?;
         }
         Ok(())
+    }
+
+    pub fn is_favorite(&self, path: &Path) -> bool {
+        self.playlists.iter().any(|playlist| {
+            playlist.name.eq_ignore_ascii_case("favorites")
+                && playlist.track_paths.iter().any(|track_path| track_path == path)
+        })
     }
 
     pub fn seek_forward(&mut self) -> Result<()> {
@@ -1537,8 +1704,23 @@ impl App {
         Ok(())
     }
 
+    pub fn update_seek(&mut self, forward: bool) {
+        if let Some(track) = self.current_track() {
+            self.player.update_seek(forward, Some(track.duration));
+        }
+    }
+
+    pub fn finish_seek(&mut self) -> Result<()> {
+        self.player.finish_seek()
+    }
+
+    pub fn finish_seek_if_idle(&mut self) -> Result<()> {
+        self.player
+            .finish_seek_if_idle(std::time::Duration::from_millis(180))
+    }
+
     pub fn toggle_shuffle(&mut self) {
-        self.shuffle = !self.shuffle;
+        self.shuffle = if self.shuffle { false } else { true };
         if self.shuffle {
             self.rebuild_shuffle();
         } else {
@@ -1680,7 +1862,7 @@ impl App {
         }
         self.search_selected = Some(match self.search_selected {
             Some(i) => (i + 1) % len,
-            None => 0,
+            _none => 0,
         });
         self.search_offset = scroll_offset(
             self.search_selected,
@@ -1702,7 +1884,7 @@ impl App {
                     i - 1
                 }
             }
-            None => 0,
+            _none => 0,
         });
         self.search_offset = scroll_offset(
             self.search_selected,
@@ -1714,7 +1896,7 @@ impl App {
     pub fn search_confirm(&mut self) -> Result<()> {
         let selected = match self.search_selected {
             Some(i) => i,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
         match self.search_results.get(selected).cloned() {
             Some(SearchResult::Track(ti)) => {
@@ -1750,7 +1932,7 @@ impl App {
                 self.exit_search();
                 self.play_index(track_idx)?;
             }
-            None => {}
+            _none => {}
         }
         Ok(())
     }
@@ -1758,7 +1940,7 @@ impl App {
     pub fn go_to_playing(&mut self) {
         let ci = match self.current_index {
             Some(i) => i,
-            None => return,
+            _none => return,
         };
 
         // Helper logic to calculate the new offset
@@ -1835,7 +2017,7 @@ impl App {
     pub fn edit_lyrics(&mut self) -> Result<()> {
         let track = match self.current_track() {
             Some(t) => t,
-            None => return Ok(()),
+            _none => return Ok(()),
         };
 
         let lrc_path = crate::lyrics::manual_lyrics_path(&track.path);
@@ -2039,7 +2221,7 @@ pub fn scroll_offset(
 ) -> usize {
     let sel = match selected {
         Some(s) => s,
-        None => return current_offset,
+        _none => return current_offset,
     };
     if sel < current_offset {
         sel
@@ -2053,7 +2235,7 @@ pub fn scroll_offset(
 pub fn center_offset(selected: Option<usize>, visible_height: usize) -> usize {
     let sel = match selected {
         Some(s) => s,
-        None => return 0,
+        _none => return 0,
     };
     if sel < visible_height / 2 {
         0
@@ -2075,7 +2257,7 @@ fn cycle_next(idx: &mut Option<usize>, len: usize) {
     }
     *idx = Some(match *idx {
         Some(i) => (i + 1) % len,
-        None => 0,
+        _none => 0,
     });
 }
 
@@ -2091,7 +2273,7 @@ fn cycle_prev(idx: &mut Option<usize>, len: usize) {
                 i - 1
             }
         }
-        None => 0,
+        _none => 0,
     });
 }
 

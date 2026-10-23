@@ -48,7 +48,7 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items)
         .highlight_style(Theme::highlight())
-        .highlight_symbol("› ");
+        .highlight_symbol("");
 
     f.render_stateful_widget(list, area, &mut state);
 }
@@ -136,14 +136,20 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
                 Theme::normal()
             };
 
-            let icon = if is_playing { "▶ " } else { "  " };
-            let right_text = if t.extension().len() == 3 {
+            let icon = "  ";
+            let favorite_icon = if app.is_favorite(&t.path) { "♥ " } else { "  " };
+            let right_text = if playlist.name.eq_ignore_ascii_case("most played") {
+                format!(
+                    "{} plays",
+                    app.play_counts.get(&t.path).copied().unwrap_or_default()
+                )
+            } else if t.extension().len() == 3 {
                 format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase()) // Add an extra space if extension is 3 chars
             } else {
                 format!("{} [{}]", t.duration_str(), t.extension().to_uppercase())
             };
             let right_width = right_text.width();
-            let total_offset = 6; // spacing
+            let total_offset = 4; // Space for heart and padding
 
             // Truncate title if needed
             let max_title_width = (area.width as usize).saturating_sub(right_width + total_offset);
@@ -169,6 +175,7 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
 
             ListItem::new(Line::from(vec![
                 Span::styled(icon, style),
+                Span::styled(favorite_icon, style),
                 Span::styled(display_title, style),
                 Span::raw(" ".repeat(padding_len)),
                 Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
@@ -182,7 +189,7 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
 
     let list = List::new(items)
         .highlight_style(Theme::highlight())
-        .highlight_symbol("› ");
+        .highlight_symbol("");
 
     f.render_stateful_widget(list, chunks[1], &mut state);
 }

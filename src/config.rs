@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 const APP_NAME: &str = "aghani";
@@ -88,8 +89,8 @@ impl Default for KeysConfig {
             set_layout_4: "4".into(),
             show_lyrics: "l".into(),
             edit_lyrics: "L".into(),
-            go_to_top:"t".into(),
-            go_to_bottom:"b".into(),
+            go_to_top: "Home".into(),
+            go_to_bottom: "End".into(),
         }
     }
 }
@@ -188,11 +189,14 @@ impl Default for Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct State {
     pub last_track: Option<PathBuf>,
     pub last_position: Option<f64>,
     pub last_tab: Option<String>,
     pub volume: Option<f32>,
+    pub history: Vec<PathBuf>,
+    pub play_counts: HashMap<PathBuf, u64>,
 }
 
 impl Config {

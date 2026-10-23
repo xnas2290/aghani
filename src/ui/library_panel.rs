@@ -4,13 +4,91 @@ use crate::ui::make_list_state;
 use crate::ui::playlist_panel;
 use crate::ui::theme::Theme;
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Tabs},
+    Frame,
 };
 use unicode_width::UnicodeWidthStr;
+
+pub fn handle_mouse_click(app: &mut App, area: Rect, x: u16, y: u16) -> bool {
+    if x < area.x || x >= area.x + area.width || y < area.y || y >= area.y + area.height {
+        return false;
+    }
+
+    let tab_y = area.y + 1;
+    let mut tab_x = area.x + 1;
+    if y == tab_y {
+        for tab in LibraryTab::all() {
+            let width = format!(" {} ", tab.label()).width() as u16;
+            if x >= tab_x && x < tab_x + width {
+                app.select_tab(tab.clone());
+                return true;
+            }
+            tab_x = tab_x.saturating_add(width + 1);
+        }
+        return false;
+    }
+
+    let mut row = y.saturating_sub(area.y + 2) as usize;
+    let (offset, length) = match app.active_tab {
+        LibraryTab::Songs => (app.songs_offset, app.all_track_indices.len()),
+        LibraryTab::Albums => match &app.album_scope {
+            LibraryScope::Album(_) => (
+                app.scoped_songs_offset,
+                app.scoped_track_indices.len(),
+            ),
+            _ => (app.albums_offset, app.albums.len()),
+        },
+        LibraryTab::Artists => match &app.artist_scope {
+            LibraryScope::Artist(_) => (
+                app.artist_albums_offset,
+                app.scoped_albums.len(),
+            ),
+            _ => (app.artists_offset, app.artists.len()),
+        },
+        LibraryTab::Playlists => match &app.playlist_scope {
+            PlaylistScope::Open(pi) => (
+                app.playlist_songs_offset,
+                app.playlist_track_indices(*pi).len(),
+            ),
+            PlaylistScope::All => (app.playlist_list_offset, app.playlists.len()),
+        },
+    };
+
+    if matches!(app.active_tab, LibraryTab::Albums)
+        && matches!(&app.album_scope, LibraryScope::Album(_))
+        || matches!(app.active_tab, LibraryTab::Artists)
+            && matches!(&app.artist_scope, LibraryScope::Artist(_))
+        || matches!(app.active_tab, LibraryTab::Playlists)
+            && matches!(&app.playlist_scope, PlaylistScope::Open(_))
+    {
+        row = row.saturating_sub(1);
+    }
+
+    let index = offset + row;
+    if index >= length {
+        return false;
+    }
+
+    match app.active_tab {
+        LibraryTab::Songs => app.selected_index = Some(index),
+        LibraryTab::Albums => match &app.album_scope {
+            LibraryScope::Album(_) => app.scoped_song_selected = Some(index),
+            _ => app.album_selected = Some(index),
+        },
+        LibraryTab::Artists => match &app.artist_scope {
+            LibraryScope::Artist(_) => app.artist_scoped_album_selected = Some(index),
+            _ => app.artist_selected = Some(index),
+        },
+        LibraryTab::Playlists => match &app.playlist_scope {
+            PlaylistScope::Open(_) => app.playlist_song_selected = Some(index),
+            PlaylistScope::All => app.playlist_selected = Some(index),
+        },
+    }
+    true
+}
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -149,6 +227,7 @@ fn status_text(app: &App) -> String {
         },
     }
 }
+
 fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .all_track_indices
@@ -167,14 +246,16 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
                 Theme::normal()
             };
 
-            let icon = if is_playing { "▶ " } else { "  " };
+            let is_favorite = app.is_favorite(&t.path);
+            let favorite_icon = if is_favorite { " ♥ " } else { "   " };
             let right_text = if t.extension().len() == 3 {
-                format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase()) // Add an extra space if extension is 3 chars
+                format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase())
+            // Add an extra space if extension is 3 chars
             } else {
                 format!("{} [{}]", t.duration_str(), t.extension().to_uppercase())
             };
             let right_width = right_text.width();
-            let total_offset = 6; // Space for icon, highlight symbol, and padding
+            let total_offset = 4; // Space for heart and padding
             let max_title_width = (area.width as usize).saturating_sub(right_width + total_offset);
 
             let display_title = if t.title.width() > max_title_width {
@@ -200,7 +281,7 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
                 .saturating_sub(display_title.width() + right_width + total_offset);
 
             ListItem::new(Line::from(vec![
-                Span::styled(icon, style),
+                Span::styled(favorite_icon, style),
                 Span::styled(display_title, style),
                 Span::raw(" ".repeat(padding_len)),
                 Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
@@ -210,7 +291,7 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let mut state = make_list_state(app.selected_index, app.songs_offset);
-    f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
+    f.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
 }
 
 fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
@@ -286,10 +367,14 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                     Theme::normal()
                 };
 
-                let icon = if is_playing { "▶ " } else { "  " };
-                let right_text = format!("{} {}", t.duration_str(), t.extension().to_uppercase());
+                let favorite_icon = if app.is_favorite(&t.path) {
+                    "♥ "
+                } else {
+                    "  "
+                };
+                let right_text = format!(" {} {}", t.duration_str(), t.extension().to_uppercase());
                 let right_width = right_text.width();
-                let total_offset = 6; // Space for icon, highlight symbol, and padding
+                let total_offset = 4; // Space for heart and padding
                 let available_width = sub_chunks[1].width as usize;
                 let max_title_width = available_width.saturating_sub(right_width + total_offset);
 
@@ -316,7 +401,7 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                     .saturating_sub(display_title.width() + right_width + total_offset);
 
                 ListItem::new(Line::from(vec![
-                    Span::styled(icon, style),
+                    Span::styled(favorite_icon, style),
                     Span::styled(display_title, style),
                     Span::raw(" ".repeat(padding_len)),
                     Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
@@ -327,7 +412,7 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
 
         let mut state = make_list_state(app.scoped_song_selected, app.scoped_songs_offset);
         f.render_stateful_widget(
-            List::new(items).highlight_symbol("› "),
+            List::new(items).highlight_symbol(""),
             sub_chunks[1],
             &mut state,
         );
@@ -359,7 +444,7 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                 };
 
                 let right_width = right_info.width();
-                let total_offset = 6; // Space for icon, highlight symbol, and padding
+                let total_offset = 2; // Padding
                 let max_name_width =
                     (area.width as usize).saturating_sub(right_width + total_offset);
 
@@ -386,7 +471,6 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
                     .saturating_sub(display_name.width() + right_width + total_offset);
 
                 ListItem::new(Line::from(vec![
-                    Span::styled(if is_active { "▶ " } else { "  " }, style),
                     Span::styled(display_name, style),
                     Span::raw(" ".repeat(padding_len)),
                     Span::styled(right_info, if is_selected { style } else { Theme::dim() }),
@@ -396,7 +480,7 @@ fn draw_albums(f: &mut Frame, app: &App, area: Rect) {
             .collect();
 
         let mut state = make_list_state(app.album_selected, app.albums_offset);
-        f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
+        f.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
     }
 }
 
@@ -453,7 +537,7 @@ fn draw_artists(f: &mut Frame, app: &App, area: Rect) {
 
         let mut state = make_list_state(app.artist_scoped_album_selected, app.artist_albums_offset);
         f.render_stateful_widget(
-            List::new(items).highlight_symbol("› "),
+            List::new(items).highlight_symbol(""),
             sub_chunks[1],
             &mut state,
         );
@@ -515,6 +599,6 @@ fn draw_artists(f: &mut Frame, app: &App, area: Rect) {
             .collect();
 
         let mut state = make_list_state(app.artist_selected, app.artists_offset);
-        f.render_stateful_widget(List::new(items).highlight_symbol("› "), area, &mut state);
+        f.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
     }
 }

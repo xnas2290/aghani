@@ -42,6 +42,91 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     confirm_overlay::draw(f, app);
 }
 
+pub fn library_area(app: &App, area: Rect) -> Option<Rect> {
+    match app.layout_mode.as_str() {
+        "default" => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(app.cover_width), Constraint::Min(0)])
+                .split(area);
+            Some(columns[1])
+        }
+        "default_lyrics" => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(app.cover_width),
+                    Constraint::Min(20),
+                    Constraint::Percentage(30),
+                ])
+                .split(area);
+            Some(columns[1])
+        }
+        "compact" => {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(app.player_height - 5),
+                ])
+                .split(area);
+            Some(rows[0])
+        }
+        "compact_lyrics" => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Percentage(50)])
+                .split(area);
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(app.player_height.saturating_sub(5)),
+                ])
+                .split(columns[0]);
+            Some(rows[0])
+        }
+        "minimal" => Some(area),
+        "minimal_lyrics" => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Percentage(50)])
+                .split(area);
+            Some(columns[0])
+        }
+        _ => None,
+    }
+}
+
+pub fn lyrics_area(app: &App, area: Rect) -> Option<Rect> {
+    match app.layout_mode.as_str() {
+        "default_lyrics" => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(app.cover_width),
+                    Constraint::Min(20),
+                    Constraint::Percentage(30),
+                ])
+                .split(area);
+            Some(columns[2])
+        }
+        "compact_lyrics" | "minimal_lyrics" => Some(
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Percentage(50)])
+                .split(area)[1],
+        ),
+        "clean_lyrics" => Some(
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(app.cover_width), Constraint::Min(0)])
+                .split(area)[1],
+        ),
+        _ => None,
+    }
+}
+
 fn draw_default(f: &mut Frame, app: &mut App, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)

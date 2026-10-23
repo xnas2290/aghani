@@ -14,6 +14,7 @@ use config::{Config, State};
 mod lyrics;
 use crossterm::{
     execute,
+    event::{DisableMouseCapture, EnableMouseCapture},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use events::handler::handle_events;
@@ -90,6 +91,11 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     // Load config FIRST before using it
     let _config = Config::load()?;
 
+    let lock_path = "/tmp/aghani.lock";
+    // Do this before redirecting stderr so a second instance's warning is
+    // visible in the terminal that started it.
+    ensure_single_instance(lock_path)?;
+
     if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
         use std::os::unix::io::IntoRawFd;
         unsafe {
@@ -102,9 +108,6 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     // Single music_dir — from CLI override or config
     let music_dir = dir_override.unwrap_or_else(|| config.music_dir.clone());
     // Remove the or_else args check — CLI is handled before run() is called
-
-    let lock_path = "/tmp/aghani.lock";
-    ensure_single_instance(lock_path)?;
 
     if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
         use std::os::unix::io::IntoRawFd;
@@ -122,7 +125,7 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     // Terminal setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -199,13 +202,19 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     app.player.stop(); // kill ffmpeg process
     state.last_tab = Some(format!("{:?}", app.active_tab));
     state.volume = Some(app.player.volume);
+    state.history = app.history.clone();
+    state.play_counts = app.play_counts.clone();
     let _ = state.save();
 
     // Cleanup IPC socket
     let _ = std::fs::remove_file(ipc::server::SOCKET_PATH);
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -225,7 +234,10 @@ fn ensure_single_instance(lock_path: &str) -> Result<()> {
             // Check if that process is still alive
             let alive = std::path::Path::new(&format!("/proc/{}", pid)).exists();
             if alive {
-                eprintln!("Aghani is already running (pid {})", pid);
+                eprintln!(
+                    "Warning: Aghani is already running (pid {}). Exiting.",
+                    pid
+                );
                 std::process::exit(0);
             }
 
@@ -286,7 +298,7 @@ fn run_loop(
             app.needs_full_redraw = false;
         }
 
-        if crossterm::event::poll(timeout)? {
+        if crossterm::event::poll(timeout.min(std::time::Duration::from_millis(50)))? {
             if handle_events(app)? {
                 break;
             }

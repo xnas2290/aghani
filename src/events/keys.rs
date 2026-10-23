@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent}; //, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -34,13 +34,24 @@ pub enum Action {
     EditLyrics,
     GotoTop,
     GotoBottom,
+    MoveToTop,
+    MoveToBottom,
 }
 
 use crate::config::KeysConfig;
 
 pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
+    if event.modifiers.contains(KeyModifiers::SHIFT) {
+        match event.code {
+            KeyCode::Home => return Action::MoveToTop,
+            KeyCode::End => return Action::MoveToBottom,
+            _ => {}
+        }
+    }
     let key_str = key_to_string(event);
     match key_str.as_str() {
+        "Home" => Action::GotoTop,
+        "End" => Action::GotoBottom,
         k if k == keys.quit => Action::Quit,
         k if k == keys.play_pause => Action::TogglePlay,
         k if k == keys.next => Action::Next,
@@ -92,6 +103,8 @@ fn key_to_string(event: KeyEvent) -> String {
         KeyCode::Up => "Up".into(),
         KeyCode::Down => "Down".into(),
         KeyCode::Backspace => "Backspace".into(),
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
         KeyCode::Esc => "Esc".into(),
         KeyCode::F(n) => format!("F{}", n),
 
