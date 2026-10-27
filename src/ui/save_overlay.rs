@@ -3,10 +3,10 @@ use crate::app::App;
 use crate::ui::make_list_state;
 use crate::ui::theme::Theme;
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
 };
 
 pub fn draw(f: &mut Frame, app: &App) {

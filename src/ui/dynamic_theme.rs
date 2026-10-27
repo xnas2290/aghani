@@ -1,4 +1,4 @@
-use color_thief::{ColorFormat, get_palette};
+use color_thief::{get_palette, ColorFormat};
 use image::DynamicImage;
 use ratatui::style::Color;
 
@@ -208,7 +208,11 @@ fn saturation((r, g, b): (u8, u8, u8)) -> f32 {
     let b = b as f32 / 255.0;
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    if max == 0.0 { 0.0 } else { (max - min) / max }
+    if max == 0.0 {
+        0.0
+    } else {
+        (max - min) / max
+    }
 }
 
 fn luminance((r, g, b): (u8, u8, u8)) -> f32 {

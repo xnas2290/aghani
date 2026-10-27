@@ -15,20 +15,24 @@ pub fn scan_directory(dir: &Path) -> Result<Vec<Track>> {
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        let path = entry.path();
-        if !path.is_file() {
+        // WalkDir already knows the type from readdir; avoid an extra stat per
+        // entry (which is expensive on large libraries).
+        if !entry.file_type().is_file() {
             continue;
         }
 
-        let ext = path
+        let path = entry.path();
+        let is_supported = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase());
+            .is_some_and(|ext| {
+                SUPPORTED_EXTENSIONS
+                    .iter()
+                    .any(|supported| ext.eq_ignore_ascii_case(supported))
+            });
 
-        if let Some(ext) = ext {
-            if SUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
-                tracks.push(Track::new(path.to_path_buf()));
-            }
+        if is_supported {
+            tracks.push(Track::new(path.to_path_buf()));
         }
     }
 

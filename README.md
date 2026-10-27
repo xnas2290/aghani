@@ -68,6 +68,7 @@ aghani --clear-caches     # clear all caches
 | `Tab` | Switch tab |
 | `/` | Search |
 | `s` | Save to playlist |
+| `Shift+S` | Cycle sorting for the active list |
 | `f` | Add to favorites |
 | `r` | Toggle shuffle |
 | `Shift+R` | Toggle repeat |
@@ -78,9 +79,25 @@ aghani --clear-caches     # clear all caches
 | `b` | Go to the bottom of the list |
 | `l` | Show lyrics |
 | `L` | Edit lyrics |
+| `'` | Synchronize lyrics line by line |
+| `e` | Edit metadata and album art of the selected song |
+| `Shift+F` | Show the selected song in the file manager |
 | `1`–`4` | Switch layout |
 | `x` | Back |
 | `q` | Quit |
+
+Songs and ordinary playlist contents default to Last added (reverse library
+scan order), and have independent sort settings. `Shift+S` cycles sorting for
+the active list: songs by Last added, First added, title, artist, album, or
+duration; albums by name, artist, or track count; artists by name, album count,
+or song count; and playlists by name or track count. History and Most Played
+retain their generated song order.
+
+To synchronize plain lyrics, play the song and press `'` (single quote). The sync
+editor starts on the first line; press `Down` as each line is sung to stamp the
+current playback position. `Space` pauses or resumes playback, `Esc` saves the
+timestamps recorded so far, and stamping the final line saves automatically.
+Synchronized lyrics use the same manual LRC cache as `L`.
 
 ## Configuration
 
@@ -97,7 +114,7 @@ title = "Cyan"
 
 [layout]
 mode = "default"  # default | compact | wide | minimal
-show_cover = true
+show_cover = false
 show_player = true
 cover_width = 40
 

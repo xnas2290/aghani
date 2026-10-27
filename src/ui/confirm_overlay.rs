@@ -1,14 +1,14 @@
 use crate::app::App;
 use crate::ui::theme::Theme;
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    Frame,
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
-    if app.confirm_dialog.is_none() && !app.new_playlist_mode {
+    if app.confirm_dialog.is_none() && !app.new_playlist_mode && !app.artwork_path_mode {
         return;
     }
 
@@ -26,11 +26,49 @@ pub fn draw(f: &mut Frame, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if app.new_playlist_mode {
+    if app.artwork_path_mode {
+        draw_artwork_path(f, app, inner);
+    } else if app.new_playlist_mode {
         draw_new_playlist(f, app, inner);
     } else if let Some(ref dialog) = app.confirm_dialog {
         draw_confirm(f, dialog.message.as_str(), inner);
     }
+}
+
+fn draw_artwork_path(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    f.render_widget(
+        Paragraph::new("Set artwork image")
+            .alignment(Alignment::Center)
+            .style(Theme::title()),
+        chunks[0],
+    );
+    let text = if app.artwork_path_input.is_empty() {
+        Span::styled(" /path/to/image.jpg", Theme::dim())
+    } else {
+        Span::styled(format!(" {}█", app.artwork_path_input), Theme::normal())
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(text)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Theme::dim()),
+        ),
+        chunks[1],
+    );
+    f.render_widget(
+        Paragraph::new("Enter ↵ / Esc ⎋")
+            .alignment(Alignment::Center)
+            .style(Theme::dim()),
+        chunks[2],
+    );
 }
 
 fn draw_new_playlist(f: &mut Frame, app: &App, area: Rect) {

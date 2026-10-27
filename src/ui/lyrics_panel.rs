@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::lyrics::Lyrics;
 use crate::ui::theme::Theme;
 use ratatui::{
     layout::Rect,
@@ -18,40 +19,113 @@ pub fn handle_mouse_click(app: &mut App, area: Rect, x: u16, y: u16) -> anyhow::
         Some(lyrics) => lyrics,
         None => return Ok(false),
     };
+
+    // Plain lyrics have no timestamps, so there is nothing to seek to.
+    if !lyrics.synced {
+        return Ok(false);
+    }
+
     let inner = Block::default().borders(Borders::ALL).inner(area);
     if x >= inner.x + inner.width || y >= inner.y + inner.height {
         return Ok(false);
     }
 
     let max_w = inner.width.saturating_sub(3) as usize;
-    let current = lyrics.current_line(app.player.elapsed()).unwrap_or(0);
-    let mut current_flat_idx = 0usize;
-    let mut flat_idx = 0usize;
-    for (index, line) in lyrics.lines.iter().enumerate() {
-        let line_count = wrap_text(&line.text, max_w).len();
-        if index == current {
-            current_flat_idx = flat_idx;
-        }
-        flat_idx += line_count;
+    let (starts, total) = flat_starts(lyrics, max_w);
+    let height = inner.height as usize;
+    let offset = visible_offset(app, lyrics, &starts, height, total);
+
+    let clicked_flat_idx = offset + (y - inner.y) as usize;
+    if clicked_flat_idx >= total {
+        return Ok(false);
     }
 
+    let line_index = starts.partition_point(|&start| start <= clicked_flat_idx) - 1;
+    let time = lyrics.lines[line_index].time;
+
+    // Clicking a line seeks to it without recentering the viewport. The
+    // clicked line stays where it is; normal auto-follow resumes on the next
+    // line.
+    app.seek_to_lyric(time)?;
+    app.lyrics_clicked_line = Some(line_index);
+    app.lyrics_scroll = Some(offset);
+    Ok(true)
+}
+
+/// Scroll the lyrics panel by one line. Plain lyrics can be scrolled freely,
+/// while timed lyrics keep auto-following until the user scrolls manually.
+pub fn handle_mouse_scroll(app: &mut App, area: Rect, up: bool) {
+    if app.lyrics_loading || app.lyrics_error {
+        return;
+    }
+    let lyrics = match &app.lyrics {
+        Some(lyrics) => lyrics,
+        None => return,
+    };
+
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let max_w = inner.width.saturating_sub(3) as usize;
+    let (starts, total) = flat_starts(lyrics, max_w);
     let height = inner.height as usize;
-    let offset = if current_flat_idx < height / 2 {
+
+    // Everything fits: keep auto-following so the current line stays marked.
+    if total <= height {
+        app.lyrics_scroll = None;
+        app.lyrics_clicked_line = None;
+        return;
+    }
+
+    let max_offset = total.saturating_sub(height);
+    let base = visible_offset(app, lyrics, &starts, height, total);
+    let next = if up {
+        base.saturating_sub(1)
+    } else {
+        (base + 1).min(max_offset)
+    };
+
+    // Manual scrolling takes over from the one-shot click positioning.
+    app.lyrics_clicked_line = None;
+    app.lyrics_scroll = Some(next);
+}
+
+/// Flat index (accounting for wrapping) where each lyric line starts.
+fn flat_starts(lyrics: &Lyrics, max_w: usize) -> (Vec<usize>, usize) {
+    let mut starts = Vec::with_capacity(lyrics.lines.len());
+    let mut total = 0usize;
+    for line in &lyrics.lines {
+        starts.push(total);
+        total += wrap_text(&line.text, max_w).len();
+    }
+    (starts, total)
+}
+
+fn auto_offset(flat_idx: usize, height: usize) -> usize {
+    if flat_idx < height / 2 {
         0
     } else {
-        current_flat_idx - height / 2
-    };
-    let clicked_flat_idx = offset + (y - inner.y) as usize;
-    let mut flat_idx = 0usize;
-    for line in &lyrics.lines {
-        let line_count = wrap_text(&line.text, max_w).len();
-        if clicked_flat_idx < flat_idx + line_count {
-            app.seek_to_lyric(line.time)?;
-            return Ok(true);
-        }
-        flat_idx += line_count;
+        flat_idx - height / 2
     }
-    Ok(false)
+}
+
+fn visible_offset(
+    app: &App,
+    lyrics: &Lyrics,
+    starts: &[usize],
+    height: usize,
+    total: usize,
+) -> usize {
+    let max_offset = total.saturating_sub(height);
+    let auto = if lyrics.synced {
+        lyrics
+            .current_line(app.player.elapsed())
+            .and_then(|index| starts.get(index).copied())
+            .map(|flat| auto_offset(flat, height))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    app.lyrics_scroll.unwrap_or(auto).min(max_offset)
 }
 // fn prepare_text(text: &str) -> String {
 //     if is_rtl(text) {
@@ -81,7 +155,7 @@ pub fn handle_mouse_click(app: &mut App, area: Rect, x: u16, y: u16) -> anyhow::
 //     })
 // }
 
-fn prepare_text(text: &str) -> String {
+pub(crate) fn prepare_text(text: &str) -> String {
     let bidi = BidiInfo::new(text, None);
     if bidi.paragraphs.is_empty() {
         return text.to_string();
@@ -136,30 +210,33 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let elapsed = app.player.elapsed();
-    let current = lyrics.current_line(elapsed).unwrap_or(0);
+    // Plain lyrics have no timing, so nothing gets highlighted or followed.
+    let current = if lyrics.synced {
+        lyrics.current_line(app.player.elapsed())
+    } else {
+        None
+    };
 
     let max_w = inner.width.saturating_sub(3) as usize;
+    let (starts, total) = flat_starts(lyrics, max_w);
+    let height = inner.height as usize;
+    let offset = visible_offset(app, lyrics, &starts, height, total);
 
-    // Build flattened items and track where each original line starts
+    // Build flattened items
     let mut items: Vec<ListItem> = Vec::new();
-    let mut current_flat_idx = 0usize; // index in flattened list for current line
-    let mut flat_idx = 0usize;
 
     for (i, line) in lyrics.lines.iter().enumerate() {
-        let is_current = i == current;
+        let is_current = current == Some(i);
         let style = if is_current {
             Theme::accent().add_modifier(Modifier::BOLD)
-        } else {
+        } else if lyrics.synced {
             Theme::dim()
+        } else {
+            Theme::normal()
         };
         // let display_text = prepare_text(&line.text);
         // let wrapped = wrap_text(&display_text, max_w);
         let wrapped = wrap_text(&line.text, max_w);
-
-        if is_current {
-            current_flat_idx = flat_idx;
-        }
 
         for chunk in &wrapped {
             // Center each chunk within max_w
@@ -174,27 +251,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 format!("{}{}", padding, chunk),
                 style,
             ))));
-            flat_idx += 1;
         }
     }
 
-    // Scroll to keep current line centered
-    let height = inner.height as usize;
-    let offset = if current_flat_idx < height / 2 {
-        0
-    } else {
-        current_flat_idx - height / 2
-    };
-
+    // Only the current line's text is highlighted; there is no row/background
+    // selection bar.
     let mut state = ListState::default();
-    state.select(Some(current_flat_idx)); // ← use flattened index
     *state.offset_mut() = offset;
 
-    f.render_stateful_widget(
-        List::new(items).highlight_style(Theme::highlight()),
-        inner,
-        &mut state,
-    );
+    f.render_stateful_widget(List::new(items), inner, &mut state);
 }
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {

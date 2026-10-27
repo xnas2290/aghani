@@ -1,15 +1,13 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::app::{App, SearchResult};
 use crate::ui::make_list_state;
 use crate::ui::theme::Theme;
-
-
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     if !app.search_mode {
@@ -77,10 +75,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             chunks[2],
         );
     } else {
-        let items: Vec<ListItem> = app
-            .search_results
-            .iter()
-            .map(|r| match r {
+        let results = &app.search_results;
+        let start = crate::ui::library_panel::visible_start(
+            results.len(),
+            app.search_selected,
+            app.search_offset,
+            chunks[2].height,
+        );
+        let end = (start + chunks[2].height as usize).min(results.len());
+        let items: Vec<ListItem> = (start..end)
+            .map(|i| match &results[i] {
                 SearchResult::Track(ti) => {
                     let t = &app.tracks[*ti];
                     let icon = "  ";
@@ -119,8 +123,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             })
             .collect();
 
-        let mut state = make_list_state(app.search_selected, app.search_offset); //ListState::default();
-        state.select(app.search_selected);
+        let relative =
+            crate::ui::library_panel::relative_selection(app.search_selected, start, items.len());
+        let mut state = make_list_state(relative, 0);
 
         f.render_stateful_widget(
             List::new(items)

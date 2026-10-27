@@ -2,12 +2,163 @@ use crate::app::App;
 use crate::app::RepeatMode;
 use crate::ui::theme::Theme;
 use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
+    Frame,
 };
+
+pub fn handle_mouse_click(
+    app: &mut App,
+    area: Rect,
+    x: u16,
+    y: u16,
+    compact: bool,
+) -> anyhow::Result<bool> {
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    if !inner.contains(Position::new(x, y)) || app.current_track().is_none() {
+        return Ok(false);
+    }
+
+    if compact {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+        if y == rows[2].y && x < inner.x.saturating_add(10) {
+            app.toggle_play()?;
+            return Ok(true);
+        }
+        if y == rows[2].y && x >= inner.right().saturating_sub(18) {
+            return Ok(true);
+        }
+        if y == rows[5].y {
+            let width = inner.width;
+            return seek_to_click(app, x, inner.x, width);
+        }
+    } else {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(9),
+                Constraint::Min(0),
+                Constraint::Length(2),
+            ])
+            .split(inner);
+        let status = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(rows[1])[8];
+
+        if y == status.y && x < inner.x.saturating_add(12) {
+            app.toggle_play()?;
+            return Ok(true);
+        }
+        if y == status.y && x >= inner.right().saturating_sub(18) {
+            return Ok(true);
+        }
+        let progress = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(rows[3])[1];
+        if y == progress.y {
+            return seek_to_click(
+                app,
+                x,
+                inner.x.saturating_add(2),
+                inner.width.saturating_sub(4),
+            );
+        }
+    }
+
+    Ok(false)
+}
+
+pub fn is_volume_area(area: Rect, x: u16, y: u16, compact: bool) -> bool {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    if !inner.contains(Position::new(x, y)) {
+        return false;
+    }
+
+    let row = if compact {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner)[2]
+    } else {
+        let content = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(9),
+                Constraint::Min(0),
+                Constraint::Length(2),
+            ])
+            .split(inner)[1];
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(content)[8]
+    };
+
+    y == row.y && x >= inner.right().saturating_sub(18)
+}
+
+fn seek_to_click(app: &mut App, x: u16, start: u16, width: u16) -> anyhow::Result<bool> {
+    if width == 0 || x < start || x >= start.saturating_add(width) {
+        return Ok(false);
+    }
+    let track = match app.current_track() {
+        Some(track) if !track.duration.is_zero() => track,
+        _ => return Ok(true),
+    };
+    let offset = x.saturating_sub(start) as f64;
+    let ratio = if width == 1 {
+        0.0
+    } else {
+        (offset / width.saturating_sub(1) as f64).clamp(0.0, 1.0)
+    };
+    app.seek_to_lyric(track.duration.mul_f64(ratio))?;
+    Ok(true)
+}
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -99,6 +250,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             ])),
             rows[2],
         );
+
+        // ── Favorite marker (just below the album) ────────────────────
+        if app.is_favorite(&track.path) {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    "  ♥",
+                    Theme::accent().add_modifier(Modifier::BOLD),
+                )])),
+                rows[3],
+            );
+        }
 
         // ── Technical Info (Type, Bitrate, SR on separate lines) ─────────
         let ext = track

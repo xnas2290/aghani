@@ -1,31 +1,56 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
 use crate::library::PlaylistScope;
 use crate::ui::theme::Theme;
 // use unicode_width::UnicodeWidthChar;
-use crate::ui::make_list_state;
+use crate::ui::{library_panel::render_artwork_rows, make_list_state};
 use unicode_width::UnicodeWidthStr;
-pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     match &app.playlist_scope {
         PlaylistScope::All => draw_playlist_list(f, app, area),
         PlaylistScope::Open(pi) => draw_playlist_songs(f, app, *pi, area),
     }
 }
 
-fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
+fn draw_playlist_list(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.grid_view && app.show_artwork {
+        let keys: Vec<String> = app
+            .playlists
+            .iter()
+            .map(|pl| format!("playlist:{}", pl.name))
+            .collect();
+        let labels: Vec<String> = app.playlists.iter().map(|pl| pl.name.clone()).collect();
+        render_grid(
+            f,
+            app,
+            area,
+            &keys,
+            &labels,
+            app.playlist_selected,
+            app.playlist_list_offset,
+        );
+        return;
+    }
     let items: Vec<ListItem> = app
         .playlists
         .iter()
         .map(|pl| {
             let count = pl.track_paths.len();
             let is_fav = pl.name.to_lowercase() == "favorites";
-            let icon = if is_fav { "  ♥ " } else { "  ≡ " };
+            let is_pinned = app.pinned_playlists.iter().any(|name| name == &pl.name);
+            let icon = if is_fav {
+                "  ♥ "
+            } else if is_pinned {
+                "  ▲ "
+            } else {
+                "  ≡ "
+            };
 
             let count_text = format!(" {} songs ", count);
             let total_offset = 4; // spacing from icon + title
@@ -34,12 +59,20 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
             let padding_len = (area.width as usize)
                 .saturating_sub(icon.width() + name_width + count_width + total_offset);
 
-            ListItem::new(Line::from(vec![
+            let text_line = Line::from(vec![
                 Span::styled(icon, Theme::accent()),
                 Span::styled(pl.name.clone(), Theme::normal()),
                 Span::raw(" ".repeat(padding_len)),
                 Span::styled(count_text, Theme::dim()),
-            ]))
+            ]);
+            let lines = if app.show_artwork {
+                let mut lines = vec![Line::from("            "); 6];
+                lines.push(text_line);
+                lines
+            } else {
+                vec![text_line]
+            };
+            ListItem::new(lines)
         })
         .collect();
 
@@ -51,6 +84,24 @@ fn draw_playlist_list(f: &mut Frame, app: &App, area: Rect) {
         .highlight_symbol("");
 
     f.render_stateful_widget(list, area, &mut state);
+    let keys: Vec<String> = app
+        .playlists
+        .iter()
+        .map(|pl| format!("playlist:{}", pl.name))
+        .collect();
+    render_artwork_rows(f, app, area, &keys, app.playlist_list_offset);
+}
+
+fn render_grid(
+    f: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    keys: &[String],
+    labels: &[String],
+    selected: Option<usize>,
+    offset: usize,
+) {
+    crate::ui::library_panel::draw_image_grid(f, app, area, keys, labels, selected, offset);
 }
 
 fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
@@ -119,11 +170,18 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
     ]));
     f.render_widget(header, chunks[0]);
 
-    // List items
-    let items: Vec<ListItem> = indices
-        .iter()
-        .enumerate()
-        .map(|(i, &real_idx)| {
+    // List items (only the rows in view)
+    let list_area = chunks[1];
+    let start = crate::ui::library_panel::visible_start(
+        indices.len(),
+        app.playlist_song_selected,
+        app.playlist_songs_offset,
+        list_area.height,
+    );
+    let end = (start + list_area.height as usize).min(indices.len());
+    let items: Vec<ListItem> = (start..end)
+        .map(|i| {
+            let real_idx = indices[i];
             let t = &app.tracks[real_idx];
             let is_playing = app.current_index == Some(real_idx);
             let is_selected = app.playlist_song_selected == Some(i);
@@ -137,14 +195,19 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
             };
 
             let icon = "  ";
-            let favorite_icon = if app.is_favorite(&t.path) { "♥ " } else { "  " };
+            let favorite_icon = if app.is_favorite(&t.path) {
+                "♥ "
+            } else {
+                "  "
+            };
             let right_text = if playlist.name.eq_ignore_ascii_case("most played") {
                 format!(
                     "{} plays",
                     app.play_counts.get(&t.path).copied().unwrap_or_default()
                 )
             } else if t.extension().len() == 3 {
-                format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase()) // Add an extra space if extension is 3 chars
+                format!("{}  [{}]", t.duration_str(), t.extension().to_uppercase())
+            // Add an extra space if extension is 3 chars
             } else {
                 format!("{} [{}]", t.duration_str(), t.extension().to_uppercase())
             };
@@ -152,7 +215,8 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
             let total_offset = 4; // Space for heart and padding
 
             // Truncate title if needed
-            let max_title_width = (area.width as usize).saturating_sub(right_width + total_offset);
+            let max_title_width =
+                (list_area.width as usize).saturating_sub(right_width + total_offset);
             let display_title = if t.title.width() > max_title_width {
                 let mut s = String::new();
                 let mut w = 0;
@@ -170,7 +234,7 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
                 t.title.clone()
             };
 
-            let padding_len = (area.width as usize)
+            let padding_len = (list_area.width as usize)
                 .saturating_sub(display_title.width() + right_width + total_offset);
 
             ListItem::new(Line::from(vec![
@@ -184,12 +248,16 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
         })
         .collect();
 
-    let mut state = make_list_state(app.playlist_song_selected, app.playlist_songs_offset);
-    state.select(app.playlist_song_selected);
+    let relative = crate::ui::library_panel::relative_selection(
+        app.playlist_song_selected,
+        start,
+        items.len(),
+    );
+    let mut state = make_list_state(relative, 0);
 
     let list = List::new(items)
         .highlight_style(Theme::highlight())
         .highlight_symbol("");
 
-    f.render_stateful_widget(list, chunks[1], &mut state);
+    f.render_stateful_widget(list, list_area, &mut state);
 }

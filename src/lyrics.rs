@@ -1,3 +1,5 @@
+use crate::library::track::Track;
+use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -15,6 +17,14 @@ pub struct Lyrics {
     pub synced: bool,
 }
 
+/// A lyric line while it is being synchronized. `time` stays `None` until the
+/// user stamps the line during a sync session.
+#[derive(Debug, Clone)]
+pub struct SyncLine {
+    pub text: String,
+    pub time: Option<Duration>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LrcLibResponse {
@@ -23,6 +33,18 @@ struct LrcLibResponse {
 }
 
 impl Lyrics {
+    /// Build an editable draft from these lyrics. Existing timestamps are
+    /// preserved when re-syncing a file that is already synchronized.
+    pub fn to_sync_lines(&self) -> Vec<SyncLine> {
+        self.lines
+            .iter()
+            .map(|line| SyncLine {
+                text: line.text.clone(),
+                time: if self.synced { Some(line.time) } else { None },
+            })
+            .collect()
+    }
+
     /// Optimized binary search for the current line
     pub fn current_line(&self, elapsed: Duration) -> Option<usize> {
         if self.lines.is_empty() {
@@ -68,7 +90,13 @@ pub fn manual_lyrics_path(track_path: &std::path::Path) -> PathBuf {
 fn sanitize_path(path: &std::path::Path) -> String {
     path.to_string_lossy()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -81,19 +109,65 @@ pub fn has_manual(track_path: &std::path::Path) -> bool {
     manual_lyrics_path(track_path).exists()
 }
 
+/// Save synchronized lyrics in the same LRC format used by manual lyrics.
+///
+/// Only lines that have a timestamp are written. Returns the number of lines
+/// written; when no line has been stamped the existing file is left untouched.
+pub fn save_synced(track: &Track, lines: &[SyncLine]) -> Result<usize> {
+    let Some((output, count)) = render_synced(track, lines) else {
+        return Ok(0);
+    };
+
+    let path = manual_lyrics_path(&track.path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, output)?;
+    Ok(count)
+}
+
+fn render_synced(track: &Track, lines: &[SyncLine]) -> Option<(String, usize)> {
+    let stamped: Vec<&SyncLine> = lines.iter().filter(|line| line.time.is_some()).collect();
+    if stamped.is_empty() {
+        return None;
+    }
+
+    let mut output = String::new();
+    output.push_str(&format!(
+        "[ti:{}]\n[ar:{}]\n[al:{}]\n[by:aghani]\n\n",
+        header_value(&track.title),
+        header_value(&track.artist),
+        header_value(&track.album),
+    ));
+
+    for line in &stamped {
+        if let Some(time) = line.time {
+            output.push_str(&format!("[{}] {}\n", format_timestamp(time), line.text));
+        }
+    }
+
+    Some((output, stamped.len()))
+}
+
+fn header_value(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
+}
+
+/// Format a duration as an LRC timestamp (`mm:ss.cc`).
+pub fn format_timestamp(time: Duration) -> String {
+    let centis = (time.as_secs_f64() * 100.0).round().max(0.0) as u64;
+    let minutes = centis / 6_000;
+    let seconds = (centis / 100) % 60;
+    let fraction = centis % 100;
+    format!("{minutes:02}:{seconds:02}.{fraction:02}")
+}
+
 // ── Auto lyrics cache path ────────────────────────────────────────────────────
 
 pub fn cache_path(artist: &str, title: &str) -> PathBuf {
     let filename = format!("{}-{}.lrc", sanitize(artist), sanitize(title));
     auto_lyrics_cache_dir().join(filename)
 }
-
-
-
-
-
-
-
 
 // ── Improved Encoding ─────────────────────────────────────────────────────────
 
@@ -194,6 +268,11 @@ pub fn parse_lrc(content: &str) -> Option<Lyrics> {
     let mut synced = false;
 
     for line in content.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        // Ignore LRC metadata tags and comments used by the manual template.
+        if line.starts_with('#') || is_metadata_tag(line) {
+            continue;
+        }
+
         if line.starts_with('[') && line.contains(']') {
             let parts: Vec<&str> = line.splitn(2, ']').collect();
             if parts.len() == 2 {
@@ -230,6 +309,22 @@ pub fn parse_lrc(content: &str) -> Option<Lyrics> {
     Some(Lyrics { lines, synced })
 }
 
+fn is_metadata_tag(line: &str) -> bool {
+    let Some(inner) = line
+        .strip_prefix('[')
+        .and_then(|line| line.split_once(']').map(|(inner, _)| inner))
+    else {
+        return false;
+    };
+    let Some((key, _)) = inner.split_once(':') else {
+        return false;
+    };
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "ti" | "ar" | "al" | "by" | "offset" | "re" | "ve" | "length" | "au"
+    )
+}
+
 fn parse_timestamp(s: &str) -> Option<Duration> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 2 {
@@ -241,8 +336,6 @@ fn parse_timestamp(s: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(min * 60.0 + sec))
 }
 
-
-
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -253,4 +346,52 @@ fn sanitize(s: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_timestamp, parse_lrc, render_synced, SyncLine};
+    use crate::library::track::Track;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[test]
+    fn formats_lrc_timestamps() {
+        assert_eq!(format_timestamp(Duration::ZERO), "00:00.00");
+        assert_eq!(format_timestamp(Duration::from_millis(12_340)), "00:12.34");
+        assert_eq!(format_timestamp(Duration::from_millis(61_234)), "01:01.23");
+        // Rounding must roll over into the next minute.
+        assert_eq!(format_timestamp(Duration::from_millis(59_999)), "01:00.00");
+    }
+
+    #[test]
+    fn renders_synced_lyrics_in_existing_lrc_format() {
+        let track = Track::new(PathBuf::from("/tmp/sync-test.mp3"));
+        let lines = vec![
+            SyncLine {
+                text: "First line".to_string(),
+                time: Some(Duration::from_millis(12_340)),
+            },
+            SyncLine {
+                text: "Not stamped yet".to_string(),
+                time: None,
+            },
+            SyncLine {
+                text: "Last line".to_string(),
+                time: Some(Duration::from_millis(61_234)),
+            },
+        ];
+
+        let (output, count) = render_synced(&track, &lines).expect("some lines are stamped");
+        assert_eq!(count, 2);
+        assert!(output.contains("[00:12.34] First line"));
+        assert!(output.contains("[01:01.23] Last line"));
+        assert!(!output.contains("Not stamped yet"));
+
+        let parsed = parse_lrc(&output).expect("valid LRC");
+        assert!(parsed.synced);
+        assert_eq!(parsed.lines.len(), 2);
+        assert_eq!(parsed.lines[0].time, Duration::from_millis(12_340));
+        assert_eq!(parsed.lines[1].text, "Last line");
+    }
 }

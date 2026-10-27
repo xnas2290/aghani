@@ -4,6 +4,7 @@ mod config;
 mod cover;
 mod error;
 mod events;
+mod file_manager;
 mod ipc;
 mod library;
 mod mpris;
@@ -13,14 +14,14 @@ use app::App;
 use config::{Config, State};
 mod lyrics;
 use crossterm::{
-    execute,
     event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use events::handler::handle_events;
 use library::cache::MetadataCache;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 // use std::{env, io};
 use std::io;
 mod cli;
@@ -62,13 +63,19 @@ fn main() -> Result<()> {
     Ok(())
 }
 fn check_dependencies() -> Result<()> {
-    if std::process::Command::new("ffmpeg")
-        .arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_err()
-    {
+    // Looking the executable up in PATH avoids spawning ffmpeg on every
+    // startup just to print `-version`. Playback will report a missing binary
+    // if the lookup is wrong.
+    let found = std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let candidate = dir.join("ffmpeg");
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false);
+
+    if !found {
         eprintln!("Error: ffmpeg not found. Please install ffmpeg.");
         eprintln!("  Ubuntu/Debian: sudo apt install ffmpeg");
         eprintln!("  Arch:          sudo pacman -S ffmpeg");
@@ -88,9 +95,6 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     }));
     let _ = check_dependencies();
 
-    // Load config FIRST before using it
-    let _config = Config::load()?;
-
     let lock_path = "/tmp/aghani.lock";
     // Do this before redirecting stderr so a second instance's warning is
     // visible in the terminal that started it.
@@ -109,19 +113,11 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     let music_dir = dir_override.unwrap_or_else(|| config.music_dir.clone());
     // Remove the or_else args check — CLI is handled before run() is called
 
-    if let Ok(log) = std::fs::File::create("/tmp/aghani.log") {
-        use std::os::unix::io::IntoRawFd;
-        unsafe {
-            libc::dup2(log.into_raw_fd(), 2);
-        }
-    }
-
     if !music_dir.exists() {
         eprintln!("Directory does not exist: {:?}", music_dir);
         std::process::exit(1);
     }
     ui::theme::init_theme(config.colors.clone());
-    let (_mpris_state, _mpris_rx) = mpris::start_mpris();
     // Terminal setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -129,9 +125,9 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Metadata channel
+    // Metadata channel. The cache is loaded on the metadata thread so it does
+    // not delay the first frame.
     let cache_path = library::cache::default_cache_path();
-    let cache = Arc::new(Mutex::new(MetadataCache::load(&cache_path)));
     let (meta_tx, meta_rx) = mpsc::channel();
 
     // IPC channel
@@ -148,7 +144,6 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
 
     // Background metadata loader
     let tracks_paths: Vec<_> = app.tracks.iter().map(|t| t.path.clone()).collect();
-    let cache_clone = Arc::clone(&cache);
     let cache_path_clone = cache_path.clone();
     // Set panic hook to clean up lock file on unexpected exit
     let lock_path_panic = lock_path.to_string();
@@ -157,7 +152,7 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
         eprintln!("Panic: {}", info);
     }));
     std::thread::spawn(move || {
-        let mut cache = cache_clone.lock().unwrap();
+        let mut cache = MetadataCache::load(&cache_path_clone);
         let mut dirty = false;
         for (i, path) in tracks_paths.iter().enumerate() {
             let mut track = crate::library::track::Track::new(path.clone());
@@ -171,13 +166,11 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
                 track.sample_rate = cached.sample_rate;
                 track.channels = cached.channels;
                 track.replaygain = cached.replaygain;
-            } else {
-                if crate::audio::metadata::enrich_track(&mut track).is_ok() {
-                    cache.insert(path.clone(), &track);
-                    dirty = true;
-                }
+            } else if crate::audio::metadata::enrich_track_metadata(&mut track).is_ok() {
+                cache.insert(path.clone(), &track);
+                dirty = true;
             }
-            if meta_tx.send((i, track, None::<Vec<u8>>)).is_err() {
+            if meta_tx.send((i, track)).is_err() {
                 break;
             }
         }
@@ -204,6 +197,8 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     state.volume = Some(app.player.volume);
     state.history = app.history.clone();
     state.play_counts = app.play_counts.clone();
+    state.artwork_overrides = app.artwork_overrides.clone();
+    state.pinned_playlists = app.pinned_playlists.clone();
     let _ = state.save();
 
     // Cleanup IPC socket
@@ -231,18 +226,24 @@ fn ensure_single_instance(lock_path: &str) -> Result<()> {
     // Check if lock file exists
     if let Ok(content) = std::fs::read_to_string(lock_path) {
         if let Ok(pid) = content.trim().parse::<u32>() {
-            // Check if that process is still alive
-            let alive = std::path::Path::new(&format!("/proc/{}", pid)).exists();
+            // A PID can be reused by an unrelated process. Only treat the
+            // lock as active when its command is actually Aghani.
+            let alive = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))
+                .ok()
+                .and_then(|cmdline| cmdline.split('\0').next().map(str::to_owned))
+                .and_then(|command| {
+                    std::path::Path::new(&command)
+                        .file_name()
+                        .map(|name| name == "aghani")
+                })
+                .unwrap_or(false);
             if alive {
-                eprintln!(
-                    "Warning: Aghani is already running (pid {}). Exiting.",
-                    pid
-                );
+                eprintln!("Warning: Aghani is already running (pid {}). Exiting.", pid);
                 std::process::exit(0);
             }
 
             // Process is dead — stale lock, continue
-            println!("Aghani is already running (pid {})", pid);
+            println!("Removing stale Aghani lock (pid {})", pid);
         }
     }
 
@@ -261,16 +262,17 @@ fn run_loop(
     state: &State,
 ) -> Result<()> {
     let mut was_overlay = false;
-    let mut last_draw = std::time::Instant::now();
-    let draw_interval = std::time::Duration::from_millis(500);
+    // Redraw at a modest idle cadence; input is still handled immediately and
+    // triggers an immediate repaint below.
+    let draw_interval = std::time::Duration::from_millis(250);
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
     app.drain_metadata();
     let _ = app.restore_session_from_state(state);
 
     terminal.draw(|f| {
         ui::layout::draw(f, app);
     })?;
+    let mut last_draw = std::time::Instant::now();
 
     loop {
         let timeout = draw_interval
@@ -283,7 +285,10 @@ fn run_loop(
         let is_overlay = app.save_mode
             || app.search_mode
             || app.confirm_dialog.is_some()
-            || app.new_playlist_mode;
+            || app.new_playlist_mode
+            || app.artwork_path_mode
+            || app.metadata_edit_mode
+            || app.lyrics_sync_mode;
         if is_overlay != was_overlay {
             terminal.clear()?;
             terminal.draw(|f| {
@@ -293,27 +298,35 @@ fn run_loop(
             was_overlay = is_overlay;
             continue;
         }
+        let mut force_draw = false;
         if app.needs_full_redraw {
             terminal.clear()?;
             app.needs_full_redraw = false;
+            force_draw = true;
         }
 
-        if crossterm::event::poll(timeout.min(std::time::Duration::from_millis(50)))? {
+        let had_event = crossterm::event::poll(timeout.min(std::time::Duration::from_millis(50)))?;
+        if had_event {
             if handle_events(app)? {
                 break;
             }
-            terminal.draw(|f| {
-                ui::layout::draw(f, app);
-            })?;
-            last_draw = std::time::Instant::now();
-        } else {
+            // External editors and terminal hand-offs invalidate the previous
+            // frame, so repaint from scratch before drawing again.
+            if app.needs_full_redraw {
+                terminal.clear()?;
+                app.needs_full_redraw = false;
+            }
+            force_draw = true;
+        }
+
+        app.tick()?;
+
+        if force_draw || last_draw.elapsed() >= draw_interval {
             terminal.draw(|f| {
                 ui::layout::draw(f, app);
             })?;
             last_draw = std::time::Instant::now();
         }
-
-        app.tick()?;
     }
     Ok(())
 }

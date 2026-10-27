@@ -1,6 +1,6 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    Frame,
 };
 
 use crate::app::App;
@@ -9,10 +9,42 @@ use crate::ui::{
     cover_panel,
     library_panel,
     lyrics_panel,
+    lyrics_sync_overlay,
+    metadata_overlay,
+    notice,
     player_panel,
     save_overlay,
     search_overlay, // statusbar,
 };
+
+fn update_library_list_heights(app: &mut App, width: u16, height: u16) {
+    let base_height = height.saturating_sub(4) as usize;
+    let image_list = app.show_artwork
+        && match app.active_tab {
+            crate::library::LibraryTab::Albums => {
+                matches!(&app.album_scope, crate::library::LibraryScope::All)
+            }
+            crate::library::LibraryTab::Artists => true,
+            crate::library::LibraryTab::Playlists => {
+                matches!(&app.playlist_scope, crate::library::PlaylistScope::All)
+            }
+            crate::library::LibraryTab::Songs => false,
+        };
+
+    if image_list {
+        if app.grid_view {
+            let columns = (width as usize / 18).max(1);
+            app.list_height = columns * (base_height / 8).max(1);
+            app.scoped_list_height = columns * (base_height.saturating_sub(1) / 8).max(1);
+        } else {
+            app.list_height = (base_height / 7).max(1);
+            app.scoped_list_height = (base_height.saturating_sub(1) / 7).max(1);
+        }
+    } else {
+        app.list_height = base_height;
+        app.scoped_list_height = app.list_height.saturating_sub(1);
+    }
+}
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -39,7 +71,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // statusbar::draw(f, app, status_area);
     save_overlay::draw(f, app);
     search_overlay::draw(f, app);
+    metadata_overlay::draw(f, app);
     confirm_overlay::draw(f, app);
+    lyrics_sync_overlay::draw(f, app);
+    notice::draw(f, app);
 }
 
 pub fn library_area(app: &App, area: Rect) -> Option<Rect> {
@@ -127,6 +162,141 @@ pub fn lyrics_area(app: &App, area: Rect) -> Option<Rect> {
     }
 }
 
+pub fn cover_area(app: &App, area: Rect) -> Option<Rect> {
+    if !app.show_cover {
+        return None;
+    }
+
+    match app.layout_mode.as_str() {
+        "default" | "clean_lyrics" => {
+            let left = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(app.cover_width), Constraint::Min(0)])
+                .split(area)[0];
+            Some(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+                    .split(left)[0],
+            )
+        }
+        "default_lyrics" => {
+            let left = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(app.cover_width),
+                    Constraint::Min(20),
+                    Constraint::Percentage(30),
+                ])
+                .split(area)[0];
+            Some(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+                    .split(left)[0],
+            )
+        }
+        "clean" => {
+            let center = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(30),
+                ])
+                .split(area)[1];
+            let top = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+                .split(center)[0];
+            Some(
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Min(0),
+                        Constraint::Length(app.cover_width),
+                        Constraint::Min(0),
+                    ])
+                    .split(top)[1],
+            )
+        }
+        _ => None,
+    }
+}
+
+pub fn player_area(app: &App, area: Rect) -> Option<Rect> {
+    if !app.show_player {
+        return None;
+    }
+
+    match app.layout_mode.as_str() {
+        "default" | "default_lyrics" | "clean_lyrics" => {
+            let width = if app.layout_mode == "default_lyrics" {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(app.cover_width),
+                        Constraint::Min(20),
+                        Constraint::Percentage(30),
+                    ])
+                    .split(area)[0]
+            } else {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(app.cover_width), Constraint::Min(0)])
+                    .split(area)[0]
+            };
+            Some(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+                    .split(width)[1],
+            )
+        }
+        "compact" => Some(
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(app.player_height - 5),
+                ])
+                .split(area)[1],
+        ),
+        "compact_lyrics" => {
+            let main = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Percentage(50)])
+                .split(area)[0];
+            Some(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),
+                        Constraint::Length(app.player_height.saturating_sub(5)),
+                    ])
+                    .split(main)[1],
+            )
+        }
+        "clean" => {
+            let center = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(30),
+                ])
+                .split(area)[1];
+            Some(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
+                    .split(center)[1],
+            )
+        }
+        _ => None,
+    }
+}
+
 fn draw_default(f: &mut Frame, app: &mut App, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -138,8 +308,7 @@ fn draw_default(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
         .split(columns[0]);
 
-    app.list_height = columns[1].height.saturating_sub(4) as usize;
-    app.scoped_list_height = app.list_height.saturating_sub(1);
+    update_library_list_heights(app, columns[1].width, columns[1].height);
 
     if app.show_cover {
         cover_panel::draw(f, app, left_rows[0]);
@@ -168,8 +337,7 @@ fn draw_default_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
         .split(columns[0]);
 
     // 3. Update list heights based on the Middle column
-    app.list_height = columns[1].height.saturating_sub(4) as usize;
-    app.scoped_list_height = app.list_height.saturating_sub(1);
+    update_library_list_heights(app, columns[1].width, columns[1].height);
 
     // 4. Draw Panels
     if app.show_cover {
@@ -197,8 +365,7 @@ fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    app.list_height = rows[0].height.saturating_sub(4) as usize;
-    app.scoped_list_height = app.list_height.saturating_sub(1);
+    update_library_list_heights(app, rows[0].width, rows[0].height);
 
     if app.show_player {
         player_panel::draw_compact(f, app, rows[1]);
@@ -226,8 +393,7 @@ fn draw_compact_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
         .split(main_columns[0]);
 
     // 3. Update list heights based on the new Library area (left_rows[0])
-    app.list_height = left_rows[0].height.saturating_sub(4) as usize;
-    app.scoped_list_height = app.list_height.saturating_sub(1);
+    update_library_list_heights(app, left_rows[0].width, left_rows[0].height);
 
     // 4. Draw Panels
     library_panel::draw(f, app, left_rows[0]);
@@ -241,8 +407,7 @@ fn draw_compact_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_minimal(f: &mut Frame, app: &mut App, area: Rect) {
     // Full screen library only
-    app.list_height = area.height.saturating_sub(4) as usize;
-    app.scoped_list_height = app.list_height.saturating_sub(1);
+    update_library_list_heights(app, area.width, area.height);
     library_panel::draw(f, app, area);
 }
 
@@ -257,8 +422,7 @@ fn draw_minimal_lyrics(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     // 2. Update list heights based on the Library column (columns[0])
-    app.list_height = columns[0].height.saturating_sub(4) as usize;
-    app.scoped_list_height = app.list_height.saturating_sub(1);
+    update_library_list_heights(app, columns[0].width, columns[0].height);
 
     // 3. Draw Panels
     library_panel::draw(f, app, columns[0]);
@@ -281,10 +445,7 @@ fn draw_default_clean(f: &mut Frame, app: &mut App, area: Rect) {
     // 2. Vertical split (rows have SAME width)
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(app.cover_height),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(app.cover_height), Constraint::Min(0)])
         .split(center_column);
 
     // 3. Create a centered area INSIDE the top row (for the image only)

@@ -53,8 +53,12 @@ pub struct KeysConfig {
     pub set_layout_4: String,
     pub show_lyrics: String,
     pub edit_lyrics: String,
-    pub go_to_top:String,
-    pub go_to_bottom:String,
+    pub go_to_top: String,
+    pub go_to_bottom: String,
+    pub set_artwork: String,
+    pub toggle_artwork: String,
+    pub edit_metadata: String,
+    pub open_in_file_manager: String,
 }
 
 impl Default for KeysConfig {
@@ -91,6 +95,10 @@ impl Default for KeysConfig {
             edit_lyrics: "L".into(),
             go_to_top: "Home".into(),
             go_to_bottom: "End".into(),
+            set_artwork: "I".into(),
+            toggle_artwork: "i".into(),
+            edit_metadata: "e".into(),
+            open_in_file_manager: "F".into(),
         }
     }
 }
@@ -148,7 +156,7 @@ pub struct LayoutConfig {
 impl Default for LayoutConfig {
     fn default() -> Self {
         LayoutConfig {
-            show_cover: true,
+            show_cover: false,
             show_player: true,
             // show_lyrics: false,
             cover_width: 40,
@@ -197,6 +205,8 @@ pub struct State {
     pub volume: Option<f32>,
     pub history: Vec<PathBuf>,
     pub play_counts: HashMap<PathBuf, u64>,
+    pub artwork_overrides: HashMap<String, PathBuf>,
+    pub pinned_playlists: Vec<String>,
 }
 
 impl Config {

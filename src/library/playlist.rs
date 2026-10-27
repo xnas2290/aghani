@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Playlist {
@@ -14,7 +14,11 @@ fn canonicalize(path: &Path) -> PathBuf {
 
 impl Playlist {
     pub fn new(name: String, path: Option<PathBuf>) -> Self {
-        Playlist { name, path, track_paths: vec![] }
+        Playlist {
+            name,
+            path,
+            track_paths: vec![],
+        }
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -31,12 +35,20 @@ impl Playlist {
             .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
             .map(|l| {
                 let p = Path::new(l.trim());
-                let full = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
+                let full = if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    base.join(p)
+                };
                 canonicalize(&full) // always store absolute canonical
             })
             .collect();
 
-        Ok(Playlist { name, path: Some(path.to_path_buf()), track_paths })
+        Ok(Playlist {
+            name,
+            path: Some(path.to_path_buf()),
+            track_paths,
+        })
     }
 
     pub fn save(&self) -> Result<()> {
@@ -48,8 +60,7 @@ impl Playlist {
         let mut lines = vec!["#EXTM3U".to_string()];
         for track_path in &self.track_paths {
             // Save as relative path so m3u is portable
-            let rel = pathdiff::diff_paths(track_path, base)
-                .unwrap_or_else(|| track_path.clone());
+            let rel = pathdiff::diff_paths(track_path, base).unwrap_or_else(|| track_path.clone());
             lines.push(rel.to_string_lossy().to_string());
         }
         std::fs::write(path, lines.join("\n"))?;

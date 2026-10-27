@@ -90,9 +90,16 @@ KEYBINDS:
     t              Go to the top
     b              Go to the bottom
     L              Edit lyrics (opens $EDITOR)
+    '              Synchronize lyrics line by line
     Shift+L        Toggle manual/fetched lyrics
     1-4            Switch layout
     x              Go back (exit scope)
+    i              Toggle library list artwork
+    G              Toggle image grid/list view
+    Shift+I        Set custom artwork for selected album/artist/playlist
+    e              Edit metadata and album art of the selected song
+    Shift+F        Show the selected song in the file manager
+    p              Pin selected playlist (playlist list)
     q              Quit
 
 LAYOUTS:

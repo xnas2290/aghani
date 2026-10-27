@@ -36,6 +36,12 @@ pub enum Action {
     GotoBottom,
     MoveToTop,
     MoveToBottom,
+    SetArtwork,
+    ToggleArtwork,
+    ToggleGrid,
+    CycleSort,
+    EditMetadata,
+    OpenInFileManager,
 }
 
 use crate::config::KeysConfig;
@@ -45,6 +51,7 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
         match event.code {
             KeyCode::Home => return Action::MoveToTop,
             KeyCode::End => return Action::MoveToBottom,
+            KeyCode::Char('s' | 'S') => return Action::CycleSort,
             _ => {}
         }
     }
@@ -52,6 +59,7 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
     match key_str.as_str() {
         "Home" => Action::GotoTop,
         "End" => Action::GotoBottom,
+        "Esc" => Action::ExitScope,
         k if k == keys.quit => Action::Quit,
         k if k == keys.play_pause => Action::TogglePlay,
         k if k == keys.next => Action::Next,
@@ -85,8 +93,13 @@ pub fn map_key_with_config(event: KeyEvent, keys: &KeysConfig) -> Action {
         // k if k == keys.set_layout_4 => Action::SetLayout(3),
         k if k == keys.show_lyrics => Action::ShowLyrics,
         k if k == keys.edit_lyrics => Action::EditLyrics, // Shift+L
-        k if k == keys.go_to_top => Action::GotoTop, // Shift+L
+        k if k == keys.go_to_top => Action::GotoTop,      // Shift+L
         k if k == keys.go_to_bottom => Action::GotoBottom, // Shift+L
+        k if k == keys.toggle_artwork => Action::ToggleArtwork,
+        "G" => Action::ToggleGrid,
+        k if k == keys.set_artwork => Action::SetArtwork,
+        k if k == keys.edit_metadata => Action::EditMetadata,
+        k if k == keys.open_in_file_manager => Action::OpenInFileManager,
         _ => Action::None,
     }
 }
@@ -109,5 +122,48 @@ fn key_to_string(event: KeyEvent) -> String {
         KeyCode::F(n) => format!("F{}", n),
 
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_key_with_config, Action};
+    use crate::config::KeysConfig;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn shift_s_cycles_sort_without_changing_save_shortcut() {
+        let keys = KeysConfig::default();
+        assert_eq!(
+            map_key_with_config(
+                KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+                &keys
+            ),
+            Action::CycleSort
+        );
+        assert_eq!(
+            map_key_with_config(
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT),
+                &keys
+            ),
+            Action::CycleSort
+        );
+        assert_eq!(
+            map_key_with_config(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), &keys),
+            Action::SaveToPlaylist
+        );
+    }
+
+    #[test]
+    fn escape_exits_scope_like_x() {
+        let keys = KeysConfig::default();
+        assert_eq!(
+            map_key_with_config(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &keys),
+            Action::ExitScope
+        );
+        assert_eq!(
+            map_key_with_config(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &keys),
+            Action::ExitScope
+        );
     }
 }
