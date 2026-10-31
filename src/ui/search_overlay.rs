@@ -91,20 +91,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     ListItem::new(Line::from(vec![
                         Span::styled(icon, Theme::accent()),
                         Span::styled("♪ ", Theme::dim()),
-                        Span::styled(t.title.clone(), Theme::normal()),
-                        Span::styled(format!("  {}", t.artist), Theme::dim()),
+                        Span::styled(crate::ui::prepare_text(&t.title), Theme::normal()),
+                        Span::styled(
+                            format!("  {}", crate::ui::prepare_text(&t.artist)),
+                            Theme::dim(),
+                        ),
                     ]))
                 }
                 SearchResult::Album(album) => ListItem::new(Line::from(vec![
                     Span::styled("  ", Theme::dim()),
                     Span::styled("◉ ", Theme::accent()),
-                    Span::styled(album.clone(), Theme::normal()),
+                    Span::styled(crate::ui::prepare_text(album), Theme::normal()),
                     Span::styled("  album", Theme::dim()),
                 ])),
                 SearchResult::Artist(artist) => ListItem::new(Line::from(vec![
                     Span::styled("  ", Theme::dim()),
                     Span::styled("● ", Theme::accent()),
-                    Span::styled(artist.clone(), Theme::normal()),
+                    Span::styled(crate::ui::prepare_text(artist), Theme::normal()),
                     Span::styled("  artist", Theme::dim()),
                 ])),
                 SearchResult::PlaylistTrack {
@@ -116,7 +119,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     ListItem::new(Line::from(vec![
                         Span::styled("  ", Theme::dim()),
                         Span::styled("≡ ", Theme::accent()),
-                        Span::styled(t.title.clone(), Theme::normal()),
+                        Span::styled(crate::ui::prepare_text(&t.title), Theme::normal()),
                         Span::styled(format!("  in {}", pl.name), Theme::dim()),
                     ]))
                 }

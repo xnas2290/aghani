@@ -76,7 +76,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         let available = (rows[1].width as usize).saturating_sub(prefix.chars().count());
         // Apply the same BiDi reordering used by the main lyrics panel so RTL
         // scripts (Arabic, Hebrew, etc.) render in the correct order.
-        let text = crate::ui::lyrics_panel::prepare_text(&truncate(&line.text, available));
+        let text = crate::ui::prepare_text(&truncate(&line.text, available));
 
         let row_style = if is_selected {
             Theme::accent().add_modifier(Modifier::BOLD)

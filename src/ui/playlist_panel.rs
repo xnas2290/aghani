@@ -240,7 +240,7 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(icon, style),
                 Span::styled(favorite_icon, style),
-                Span::styled(display_title, style),
+                Span::styled(crate::ui::prepare_text(&display_title), style),
                 Span::raw(" ".repeat(padding_len)),
                 Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
             ]))

@@ -8,7 +8,6 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
-use unicode_bidi::BidiInfo;
 
 pub fn handle_mouse_click(app: &mut App, area: Rect, x: u16, y: u16) -> anyhow::Result<bool> {
     if app.lyrics_loading || app.lyrics_error || x < area.x || y < area.y {
@@ -155,17 +154,6 @@ fn visible_offset(
 //     })
 // }
 
-pub(crate) fn prepare_text(text: &str) -> String {
-    let bidi = BidiInfo::new(text, None);
-    if bidi.paragraphs.is_empty() {
-        return text.to_string();
-    }
-
-    let para = &bidi.paragraphs[0];
-    let line = 0..text.len();
-    let reordered = bidi.reorder_line(para, line);
-    reordered.to_string()
-}
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let has_manual = app
         .current_track()
@@ -281,14 +269,14 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
             current.push_str(word);
             current_len += 1 + word_len;
         } else {
-            lines.push(prepare_text(&current)); // ← apply BiDi per line
+            lines.push(crate::ui::prepare_text(&current)); // ← apply BiDi per line
             current = word.to_string();
             current_len = word_len;
         }
     }
 
     if !current.is_empty() {
-        lines.push(prepare_text(&current));
+        lines.push(crate::ui::prepare_text(&current));
     }
     if lines.is_empty() {
         lines.push(String::new());

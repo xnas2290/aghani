@@ -2679,12 +2679,9 @@ impl App {
         self.player.volume_down();
     }
 
-    /// Start loading cover art on a worker thread so playback and the first
-    /// frame are never blocked by decoding a large embedded image.
+    /// Load cover art in the background, keeping the current image visible
+    /// until its replacement is ready.
     fn refresh_cover(&mut self, index: usize) -> Result<()> {
-        self.cover_image = None;
-        crate::ui::theme::clear_dynamic_colors();
-
         let path = match self.tracks.get(index) {
             Some(track) => track.path.clone(),
             None => return Ok(()),

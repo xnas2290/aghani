@@ -320,7 +320,7 @@ pub fn draw_image_grid(
         );
         if label_area.height > 0 {
             f.render_widget(
-                Paragraph::new(labels[index].clone()).style(style),
+                Paragraph::new(crate::ui::prepare_text(&labels[index])).style(style),
                 label_area,
             );
         }
@@ -477,7 +477,7 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
 
             ListItem::new(Line::from(vec![
                 Span::styled(favorite_icon, style),
-                Span::styled(display_title, style),
+                Span::styled(crate::ui::prepare_text(&display_title), style),
                 Span::raw(" ".repeat(padding_len)),
                 Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
             ]))
@@ -639,7 +639,7 @@ fn draw_albums(f: &mut Frame, app: &mut App, area: Rect) {
 
                 ListItem::new(Line::from(vec![
                     Span::styled(favorite_icon, style),
-                    Span::styled(display_title, style),
+                    Span::styled(crate::ui::prepare_text(&display_title), style),
                     Span::raw(" ".repeat(padding_len)),
                     Span::styled(right_text, if is_selected { style } else { Theme::dim() }),
                 ]))
@@ -727,7 +727,7 @@ fn draw_albums(f: &mut Frame, app: &mut App, area: Rect) {
                     .saturating_sub(display_name.width() + right_width + total_offset);
 
                 let text_line = Line::from(vec![
-                    Span::styled(display_name, style),
+                    Span::styled(crate::ui::prepare_text(&display_name), style),
                     Span::raw(" ".repeat(padding_len)),
                     Span::styled(right_info, if is_selected { style } else { Theme::dim() }),
                 ]);
@@ -764,7 +764,7 @@ fn draw_artists(f: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    artist_name.to_uppercase(),
+                    crate::ui::prepare_text(&artist_name.to_uppercase()),
                     Theme::accent().add_modifier(Modifier::BOLD),
                 ),
             ])),
@@ -815,7 +815,7 @@ fn draw_artists(f: &mut Frame, app: &mut App, area: Rect) {
 
                 let text_line = Line::from(vec![
                     Span::styled("  ", style),
-                    Span::styled(album.clone(), style),
+                    Span::styled(crate::ui::prepare_text(album), style),
                     Span::raw(padding),
                     Span::styled(right_info, if is_selected { style } else { Theme::dim() }),
                 ]);
@@ -909,7 +909,7 @@ fn draw_artists(f: &mut Frame, app: &mut App, area: Rect) {
 
                 let text_line = Line::from(vec![
                     Span::styled("  ", style),
-                    Span::styled(display_name, style),
+                    Span::styled(crate::ui::prepare_text(&display_name), style),
                     Span::raw(padding),
                     Span::styled(right_info, if is_selected { style } else { Theme::dim() }),
                 ]);

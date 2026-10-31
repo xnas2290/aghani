@@ -228,7 +228,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(Line::from(vec![
                 Span::styled("  Title   ", Theme::dim()),
                 Span::styled(
-                    truncate(&track.title, max_w),
+                    crate::ui::prepare_text(&truncate(&track.title, max_w)),
                     Theme::title().add_modifier(Modifier::BOLD),
                 ),
             ])),
@@ -238,7 +238,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  Artist  ", Theme::dim()),
-                Span::styled(truncate(&track.artist, max_w), Theme::normal()),
+                Span::styled(
+                    crate::ui::prepare_text(&truncate(&track.artist, max_w)),
+                    Theme::normal(),
+                ),
             ])),
             rows[1],
         );
@@ -246,7 +249,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  Album   ", Theme::dim()),
-                Span::styled(truncate(&track.album, max_w), Theme::normal()),
+                Span::styled(
+                    crate::ui::prepare_text(&truncate(&track.album, max_w)),
+                    Theme::normal(),
+                ),
             ])),
             rows[2],
         );
@@ -429,7 +435,7 @@ pub fn draw_compact(f: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(Line::from(vec![
                 Span::styled(" Title ", Theme::dim()),
                 Span::styled(
-                    truncate(&track.title, max_w),
+                    crate::ui::prepare_text(&truncate(&track.title, max_w)),
                     Theme::title().add_modifier(Modifier::BOLD),
                 ),
             ]))
@@ -440,7 +446,10 @@ pub fn draw_compact(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" Artist ", Theme::dim()),
-                Span::styled(truncate(&track.artist, max_w), Theme::normal()),
+                Span::styled(
+                    crate::ui::prepare_text(&truncate(&track.artist, max_w)),
+                    Theme::normal(),
+                ),
             ]))
             .alignment(Alignment::Center),
             layout[0],
@@ -449,7 +458,10 @@ pub fn draw_compact(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" Album ", Theme::dim()),
-                Span::styled(truncate(&track.album, max_w - 1), Theme::normal()),
+                Span::styled(
+                    crate::ui::prepare_text(&truncate(&track.album, max_w - 1)),
+                    Theme::normal(),
+                ),
                 Span::raw(" "),
             ]))
             .alignment(Alignment::Right),
