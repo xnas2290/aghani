@@ -227,7 +227,11 @@ fn artwork_mime(bytes: &[u8]) -> Result<MimeType> {
         image::ImageFormat::Tiff => MimeType::Tiff,
         other => MimeType::Unknown(format!(
             "image/{}",
-            other.extensions_str().first().copied().unwrap_or("octet-stream")
+            other
+                .extensions_str()
+                .first()
+                .copied()
+                .unwrap_or("octet-stream")
         )),
     })
 }

@@ -174,12 +174,41 @@ pub struct StartupConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuiConfig {
+    pub dark_mode: bool,
+    pub lyrics_font_size: f32,
+    /// Last width of the lyrics side panel, restored on reopen and restart.
+    pub lyrics_panel_width: f32,
+    pub theme: String,
+    pub muted_volume: Option<f32>,
+    pub hide_single_track_albums: bool,
+    pub show_waveform: bool,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            dark_mode: true,
+            lyrics_font_size: 20.0,
+            lyrics_panel_width: 400.0,
+            theme: "classic_dark".into(),
+            muted_volume: None,
+            hide_single_track_albums: false,
+            show_waveform: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub music_dir: PathBuf,
     pub keys: KeysConfig,
     pub colors: ColorsConfig,
     pub startup: StartupConfig,
     pub layout: LayoutConfig,
+    #[serde(default)]
+    pub gui: GuiConfig,
 }
 
 impl Default for Config {
@@ -192,6 +221,7 @@ impl Default for Config {
             colors: ColorsConfig::default(),
             startup: StartupConfig::default(),
             layout: LayoutConfig::default(),
+            gui: GuiConfig::default(),
         }
     }
 }
@@ -204,6 +234,8 @@ pub struct State {
     pub last_tab: Option<String>,
     pub volume: Option<f32>,
     pub history: Vec<PathBuf>,
+    /// Plays made from the History playlist that have not been committed yet.
+    pub pending_history: Vec<PathBuf>,
     pub play_counts: HashMap<PathBuf, u64>,
     pub artwork_overrides: HashMap<String, PathBuf>,
     pub pinned_playlists: Vec<String>,
@@ -252,5 +284,68 @@ impl State {
         let content = toml::to_string_pretty(self)?;
         std::fs::write(path, content)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_without_gui_preferences_uses_gui_defaults() {
+        let mut value = toml::Value::try_from(Config::default()).unwrap();
+        value.as_table_mut().unwrap().remove("gui");
+        let serialized = toml::to_string(&value).unwrap();
+        let config: Config = toml::from_str(&serialized).unwrap();
+
+        assert!(config.gui.dark_mode);
+        assert_eq!(config.gui.lyrics_font_size, 20.0);
+        assert_eq!(config.gui.theme, "classic_dark");
+        assert_eq!(config.gui.muted_volume, None);
+        assert!(!config.gui.hide_single_track_albums);
+        assert!(config.gui.show_waveform);
+    }
+
+    #[test]
+    fn older_gui_preferences_default_to_classic_dark_theme() {
+        let mut value = toml::Value::try_from(Config::default()).unwrap();
+        value
+            .as_table_mut()
+            .unwrap()
+            .get_mut("gui")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .remove("theme");
+        let serialized = toml::to_string(&value).unwrap();
+        let config: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(config.gui.theme, "classic_dark");
+    }
+
+    #[test]
+    fn older_gui_preferences_default_to_showing_single_track_albums() {
+        let mut value = toml::Value::try_from(Config::default()).unwrap();
+        value
+            .as_table_mut()
+            .unwrap()
+            .get_mut("gui")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .remove("hide_single_track_albums");
+        value
+            .as_table_mut()
+            .unwrap()
+            .get_mut("gui")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .remove("show_waveform");
+        let serialized = toml::to_string(&value).unwrap();
+        let config: Config = toml::from_str(&serialized).unwrap();
+
+        assert!(!config.gui.hide_single_track_albums);
+        assert!(config.gui.show_waveform);
     }
 }

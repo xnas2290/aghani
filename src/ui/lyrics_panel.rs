@@ -182,6 +182,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    if app.lyrics_flagged {
+        f.render_widget(
+            Paragraph::new(Span::styled("  Lyrics hidden (flagged as wrong)", Theme::dim())),
+            inner,
+        );
+        return;
+    }
+
     if app.lyrics_error {
         f.render_widget(
             Paragraph::new(Span::styled("  No lyrics found", Theme::dim())),

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::time::SystemTime;
 
 use anyhow::Result;
@@ -86,4 +87,66 @@ pub fn default_cache_path() -> std::path::PathBuf {
         .join("aghani");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("metadata.json")
+}
+
+fn load_cached_track(cache: &mut MetadataCache, path: &Path) -> (Track, bool) {
+    let mut track = Track::new(path.to_path_buf());
+    if let Some(cached) = cache.get_valid(path) {
+        track.title = cached.title.clone();
+        track.artist = cached.artist.clone();
+        track.album = cached.album.clone();
+        track.duration = std::time::Duration::from_secs_f64(cached.duration_secs);
+        track.has_cover = cached.has_cover;
+        track.bitrate = cached.bitrate;
+        track.sample_rate = cached.sample_rate;
+        track.channels = cached.channels;
+        track.replaygain = cached.replaygain;
+        (track, false)
+    } else if crate::audio::metadata::enrich_track_metadata(&mut track).is_ok() {
+        cache.insert(path.to_path_buf(), &track);
+        (track, true)
+    } else {
+        (track, false)
+    }
+}
+
+pub fn load_metadata_async(paths: Vec<PathBuf>) -> Receiver<(usize, Track)> {
+    let (tx, rx) = mpsc::channel();
+    let cache_path = default_cache_path();
+    std::thread::spawn(move || {
+        let mut cache = MetadataCache::load(&cache_path);
+        let mut dirty = false;
+        for (index, path) in paths.iter().enumerate() {
+            let (track, track_dirty) = load_cached_track(&mut cache, path);
+            dirty |= track_dirty;
+            if tx.send((index, track)).is_err() {
+                break;
+            }
+        }
+        if dirty {
+            let _ = cache.save(&cache_path);
+        }
+    });
+    rx
+}
+
+/// Load metadata for a small set of paths on the calling thread. Used by the
+/// GUI's live library refresh so newly added files appear immediately.
+#[cfg(feature = "gui")]
+pub fn load_metadata_sync(paths: &[PathBuf]) -> Vec<Track> {
+    let cache_path = default_cache_path();
+    let mut cache = MetadataCache::load(&cache_path);
+    let mut dirty = false;
+    let tracks = paths
+        .iter()
+        .map(|path| {
+            let (track, track_dirty) = load_cached_track(&mut cache, path);
+            dirty |= track_dirty;
+            track
+        })
+        .collect();
+    if dirty {
+        let _ = cache.save(&cache_path);
+    }
+    tracks
 }

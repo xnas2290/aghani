@@ -4,8 +4,8 @@ use crate::ui::make_list_state;
 use crate::ui::playlist_panel;
 use crate::ui::theme::Theme;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
     layout::Alignment,
+    layout::{Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Tabs},
@@ -424,7 +424,7 @@ fn status_text(app: &App) -> String {
 
 fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
     let indices = &app.all_track_indices;
-    let start = visible_start(indices.len(), app.selected_index, app.songs_offset, area.height);
+    let start = visible_start(indices.len(), app.songs_offset, area.height);
     let end = (start + area.height as usize).min(indices.len());
     let items: Vec<ListItem> = (start..end)
         .map(|i| {
@@ -490,28 +490,12 @@ fn draw_songs(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
 }
 
-/// First row index to build for a viewport. Corrects a stale offset when the
-/// selection moved or the terminal was resized, mirroring `scroll_offset`.
-pub(crate) fn visible_start(
-    len: usize,
-    selected: Option<usize>,
-    offset: usize,
-    height: u16,
-) -> usize {
+/// First row index to build for a viewport, independent of the selected item.
+pub(crate) fn visible_start(len: usize, offset: usize, height: u16) -> usize {
     if len == 0 || height == 0 {
         return 0;
     }
-    let height = height as usize;
-    let mut start = offset.min(len - 1);
-    if let Some(selected) = selected {
-        let selected = selected.min(len - 1);
-        if selected < start {
-            start = selected;
-        } else if selected >= start + height {
-            start = selected + 1 - height;
-        }
-    }
-    start
+    offset.min(len - 1)
 }
 
 pub(crate) fn relative_selection(
@@ -582,12 +566,7 @@ fn draw_albums(f: &mut Frame, app: &mut App, area: Rect) {
 
         let indices = &app.scoped_track_indices;
         let list_area = sub_chunks[1];
-        let start = visible_start(
-            indices.len(),
-            app.scoped_song_selected,
-            app.scoped_songs_offset,
-            list_area.height,
-        );
+        let start = visible_start(indices.len(), app.scoped_songs_offset, list_area.height);
         let end = (start + list_area.height as usize).min(indices.len());
         let items: Vec<ListItem> = (start..end)
             .map(|i| {
@@ -649,11 +628,7 @@ fn draw_albums(f: &mut Frame, app: &mut App, area: Rect) {
 
         let relative = relative_selection(app.scoped_song_selected, start, items.len());
         let mut state = make_list_state(relative, 0);
-        f.render_stateful_widget(
-            List::new(items).highlight_symbol(""),
-            list_area,
-            &mut state,
-        );
+        f.render_stateful_widget(List::new(items).highlight_symbol(""), list_area, &mut state);
     } else {
         if app.grid_view && app.show_artwork {
             let keys: Vec<String> = app
@@ -940,11 +915,11 @@ mod tests {
     use super::{relative_selection, visible_start};
 
     #[test]
-    fn visible_start_keeps_selection_in_view() {
-        assert_eq!(visible_start(100, Some(50), 0, 10), 41);
-        assert_eq!(visible_start(100, Some(5), 20, 10), 5);
-        assert_eq!(visible_start(100, Some(95), 0, 10), 86);
-        assert_eq!(visible_start(0, None, 0, 10), 0);
+    fn visible_start_follows_scroll_offset() {
+        assert_eq!(visible_start(100, 0, 10), 0);
+        assert_eq!(visible_start(100, 20, 10), 20);
+        assert_eq!(visible_start(100, 95, 10), 95);
+        assert_eq!(visible_start(0, 0, 10), 0);
     }
 
     #[test]

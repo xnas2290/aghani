@@ -2,13 +2,15 @@ use crate::audio::metadata::enrich_track;
 use crate::audio::player::Player;
 
 // use crate::audio::player::PlayerCommand;
+#[cfg(feature = "tui")]
 use crate::cover::extractor::{decode_cover, load_fallback};
 use crate::library::playlist::Playlist;
 use crate::library::scanner::scan_directory;
 use crate::library::track::Track;
 use crate::library::PlaylistScope;
 use crate::library::{LibraryScope, LibraryTab};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+#[cfg(feature = "tui")]
 use image::DynamicImage;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -51,7 +53,11 @@ pub enum SongSort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlbumSort { Name, Artist, Tracks }
+pub enum AlbumSort {
+    Name,
+    Artist,
+    Tracks,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtistSort {
@@ -61,7 +67,10 @@ pub enum ArtistSort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaylistSort { Name, Tracks }
+pub enum PlaylistSort {
+    Name,
+    Tracks,
+}
 
 impl SongSort {
     fn next(self) -> Self {
@@ -86,8 +95,21 @@ impl SongSort {
     }
 }
 impl AlbumSort {
-    fn next(self) -> Self { match self { Self::Name => Self::Artist, Self::Artist => Self::Tracks, Self::Tracks => Self::Name } }
-    pub fn label(self) -> &'static str { match self { Self::Name => "Name", Self::Artist => "Artist", Self::Tracks => "Track count" } }
+    fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Artist,
+            Self::Artist => Self::Tracks,
+            Self::Tracks => Self::Name,
+        }
+    }
+    #[cfg(any(feature = "tui", feature = "gui"))]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Artist => "Artist",
+            Self::Tracks => "Track count",
+        }
+    }
 }
 impl ArtistSort {
     fn next(self) -> Self {
@@ -97,6 +119,7 @@ impl ArtistSort {
             Self::Songs => Self::Name,
         }
     }
+    #[cfg(any(feature = "tui", feature = "gui"))]
     pub fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
@@ -106,8 +129,19 @@ impl ArtistSort {
     }
 }
 impl PlaylistSort {
-    fn next(self) -> Self { match self { Self::Name => Self::Tracks, Self::Tracks => Self::Name } }
-    pub fn label(self) -> &'static str { match self { Self::Name => "Name", Self::Tracks => "Track count" } }
+    fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Tracks,
+            Self::Tracks => Self::Name,
+        }
+    }
+    #[cfg(any(feature = "tui", feature = "gui"))]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Tracks => "Track count",
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayContext {
@@ -170,11 +204,26 @@ pub struct App {
     pub playlist_scope: PlaylistScope,
     pub playlist_song_selected: Option<usize>,
     pub playlists: Vec<Playlist>,
+    #[cfg(feature = "gui")]
+    pub queue: Vec<usize>,
+    #[cfg(feature = "gui")]
+    queue_resume_index: Option<usize>,
+    #[cfg(feature = "gui")]
+    queue_resume_position: Option<usize>,
+    /// Set when playback returns to the list after the manual queue ends, so
+    /// the GUI can scroll the playing song to the center like "go to playing".
+    #[cfg(feature = "gui")]
+    pub center_playing_request: bool,
     pub history: Vec<PathBuf>,
+    /// Plays made while listening from the History playlist. They are kept
+    /// aside so the History list does not change under the user, and are
+    /// flushed into `history` when playback moves to another context.
+    pub pending_history: Vec<PathBuf>,
     pub play_counts: HashMap<PathBuf, u64>,
     pub save_mode: bool,
     pub save_candidates: Vec<usize>,
     pub save_selected: usize,
+    save_track_path: Option<PathBuf>,
     pub artist_album_counts: HashMap<String, usize>,
     album_track_counts: HashMap<String, usize>,
     album_artist_map: HashMap<String, String>,
@@ -185,15 +234,24 @@ pub struct App {
     search_terms: Vec<SearchTerms>,
     pub player: Player,
     pub current_index: Option<usize>,
+    /// Playing position inside the active album/playlist context. Needed to
+    /// tell duplicate entries apart (for example the same song twice in
+    /// History) when moving to the next or previous track.
+    play_context_position: Option<usize>,
     pub selected_index: Option<usize>,
     pub scoped_song_selected: Option<usize>,
+    #[cfg(feature = "tui")]
     pub cover_image: Option<ratatui_image::protocol::StatefulProtocol>,
+    #[cfg(feature = "tui")]
     cover_rx: std::sync::mpsc::Receiver<(usize, Option<DynamicImage>)>,
+    #[cfg(feature = "tui")]
     cover_tx: std::sync::mpsc::Sender<(usize, Option<DynamicImage>)>,
+    #[cfg(feature = "tui")]
     pub picker: ratatui_image::picker::Picker,
     metadata_rx: Receiver<(usize, Track)>,
     pub loading: bool,
     pub loaded_count: usize,
+    #[cfg(feature = "tui")]
     fallback_cover: Option<DynamicImage>,
     pub active_tab: LibraryTab,
     pub albums: Vec<String>,
@@ -250,8 +308,12 @@ pub struct App {
     pub new_playlist_name: String,
     pub music_dir: std::path::PathBuf,
     pub lyrics: Option<crate::lyrics::Lyrics>,
+    /// Bumped whenever `lyrics` is replaced, so views can cache derived text.
+    pub lyrics_revision: u64,
     pub lyrics_loading: bool,
     pub lyrics_error: bool,
+    /// True when the current track's lyrics were flagged as wrong and hidden.
+    pub lyrics_flagged: bool,
     /// Manual scroll offset for the lyrics panel. `None` follows playback.
     pub lyrics_scroll: Option<usize>,
     /// Line clicked to seek, whose viewport should stay put until playback
@@ -265,8 +327,13 @@ pub struct App {
     /// Short-lived message shown at the bottom of the screen.
     pub notice: Option<(String, std::time::Instant)>,
     pub needs_full_redraw: bool,
+    #[cfg(feature = "tui")]
     last_mouse_click: Option<(u16, u16, std::time::Instant)>,
     pub artwork: HashMap<String, crate::library::artwork::Thumbnail>,
+    /// Per-key version bumped whenever a thumbnail is inserted or replaced so
+    /// the GUI can drop that item's cached texture and show the new image.
+    pub artwork_revisions: HashMap<String, u64>,
+    #[cfg(feature = "tui")]
     pub artwork_protocols: HashMap<String, ratatui_image::protocol::StatefulProtocol>,
     pub artwork_overrides: HashMap<String, PathBuf>,
     artwork_rx: std::sync::mpsc::Receiver<(String, Option<crate::library::artwork::Thumbnail>)>,
@@ -287,7 +354,9 @@ pub struct App {
     pub grid_view: bool,
     pub pinned_playlists: Vec<String>,
     pub song_sort: SongSort,
+    pub song_sort_descending: bool,
     pub playlist_song_sort: SongSort,
+    pub playlist_song_sort_descending: bool,
     pub album_sort: AlbumSort,
     pub artist_sort: ArtistSort,
     pub playlist_sort: PlaylistSort,
@@ -296,7 +365,6 @@ pub struct App {
 impl App {
     pub fn new(
         music_dir: &Path,
-        metadata_rx: Receiver<(usize, Track)>,
         config: &crate::config::Config,
         // cmd_rx: Receiver<PlayerCommand>,
     ) -> Result<Self> {
@@ -372,8 +440,12 @@ impl App {
         playlists.push(Playlist::new("History".to_string(), None));
         playlists.push(Playlist::new("Most Played".to_string(), None));
         let tracks = scan_directory(music_dir)?;
+        let metadata_paths = tracks.iter().map(|track| track.path.clone()).collect();
+        let metadata_rx = crate::library::cache::load_metadata_async(metadata_paths);
         let selected_index = if tracks.is_empty() { None } else { Some(0) };
+        #[cfg(feature = "tui")]
         let fallback_cover = load_fallback(Path::new("assets/default_cover.png")).ok();
+        #[cfg(feature = "tui")]
         let picker = ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
         let (artwork_tx, artwork_rx) = std::sync::mpsc::channel();
@@ -386,6 +458,7 @@ impl App {
             .map(|(index, track)| (track.path.clone(), index))
             .collect();
         let search_terms: Vec<SearchTerms> = tracks.iter().map(SearchTerms::from_track).collect();
+        #[cfg(feature = "tui")]
         let (cover_tx, cover_rx) = std::sync::mpsc::channel();
 
         // Apply startup volume
@@ -398,10 +471,15 @@ impl App {
             search_terms,
             player,
             current_index: None,
+            play_context_position: None,
             selected_index,
+            #[cfg(feature = "tui")]
             cover_image: None,
+            #[cfg(feature = "tui")]
             cover_rx,
+            #[cfg(feature = "tui")]
             cover_tx,
+            #[cfg(feature = "tui")]
             picker,
             metadata_rx,
             loading: true,
@@ -416,6 +494,7 @@ impl App {
             album_artist_map: HashMap::new(),
             artist_song_counts: HashMap::new(),
             album_cover_paths: HashMap::new(),
+            #[cfg(feature = "tui")]
             fallback_cover,
             active_tab: LibraryTab::Songs,
             album_selected: None,
@@ -431,8 +510,18 @@ impl App {
             save_mode: false,
             save_candidates: vec![],
             save_selected: 0,
+            save_track_path: None,
             playlists,
+            #[cfg(feature = "gui")]
+            queue: Vec::new(),
+            #[cfg(feature = "gui")]
+            queue_resume_index: None,
+            #[cfg(feature = "gui")]
+            queue_resume_position: None,
+            #[cfg(feature = "gui")]
+            center_playing_request: false,
             history: Vec::new(),
+            pending_history: Vec::new(),
             play_counts: HashMap::new(),
             play_context: PlayContext::AllTracks,
             shuffle: false,
@@ -475,8 +564,10 @@ impl App {
             new_playlist_name: String::new(),
             music_dir: music_dir.to_path_buf(),
             lyrics: None,
+            lyrics_revision: 0,
             lyrics_loading: false,
             lyrics_error: false,
+            lyrics_flagged: false,
             lyrics_scroll: None,
             lyrics_clicked_line: None,
             lyrics_rx: None,
@@ -486,8 +577,11 @@ impl App {
             lyrics_sync_track: None,
             notice: None,
             needs_full_redraw: false,
+            #[cfg(feature = "tui")]
             last_mouse_click: None,
             artwork: HashMap::new(),
+            artwork_revisions: HashMap::new(),
+            #[cfg(feature = "tui")]
             artwork_protocols: HashMap::new(),
             artwork_overrides: HashMap::new(),
             artwork_rx,
@@ -506,7 +600,9 @@ impl App {
             grid_view: false,
             pinned_playlists: Vec::new(),
             song_sort: SongSort::LastAdded,
+            song_sort_descending: false,
             playlist_song_sort: SongSort::LastAdded,
+            playlist_song_sort_descending: false,
             album_sort: AlbumSort::Name,
             artist_sort: ArtistSort::Name,
             playlist_sort: PlaylistSort::Name,
@@ -648,14 +744,23 @@ impl App {
 
     pub fn restore_session_from_state(&mut self, state: &crate::config::State) -> Result<()> {
         self.history = state.history.clone();
+        self.pending_history = state.pending_history.clone();
         self.play_counts = state.play_counts.clone();
         self.artwork_overrides = state.artwork_overrides.clone();
         self.pinned_playlists = state.pinned_playlists.clone();
         for (key, path) in &self.artwork_overrides {
             if let Some(thumb) = crate::library::artwork::from_path(key, path) {
+                #[cfg(feature = "tui")]
                 self.artwork_protocols
                     .insert(key.clone(), self.picker.new_resize_protocol(thumb.image()));
                 self.artwork.insert(key.clone(), thumb);
+                let revision = self
+                    .artwork_revisions
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0)
+                    .wrapping_add(1);
+                self.artwork_revisions.insert(key.clone(), revision);
             }
         }
         self.refresh_generated_playlists();
@@ -693,6 +798,7 @@ impl App {
                 self.player.pause();
 
                 // Load the album art for the restored track
+                #[cfg(feature = "tui")]
                 self.refresh_cover(idx)?;
             }
         }
@@ -712,7 +818,12 @@ impl App {
             playlist.name.to_lowercase().as_str(),
             "history" | "most played"
         ) {
-            sort_track_indices(&mut indices, &self.tracks, self.playlist_song_sort);
+            sort_playlist_track_indices(
+                &mut indices,
+                &self.tracks,
+                self.playlist_song_sort,
+                self.playlist_song_sort_descending,
+            );
         }
         indices
     }
@@ -721,11 +832,8 @@ impl App {
         self.playlist_scope = PlaylistScope::Open(idx);
         let resolved = self.playlist_track_indices(idx);
         self.playlist_song_selected = if resolved.is_empty() { None } else { Some(0) };
-        self.playlist_songs_offset = scroll_offset(
-            self.playlist_song_selected,
-            0,
-            self.list_height,
-        );
+        self.playlist_songs_offset =
+            scroll_offset(self.playlist_song_selected, 0, self.list_height);
     }
 
     // ── Playlist management ───────────────────────────────────────────────────────
@@ -738,15 +846,20 @@ impl App {
     }
 
     pub fn start_artwork_path(&mut self) {
-        let can_set = match self.active_tab {
+        if self.artwork_edit_context() && self.selected_artwork_key().is_some() {
+            self.artwork_path_mode = true;
+            self.artwork_path_input.clear();
+        }
+    }
+
+    /// True when the active tab shows a top-level collection row or card
+    /// (album, artist or playlist) whose image can be replaced.
+    fn artwork_edit_context(&self) -> bool {
+        match self.active_tab {
             LibraryTab::Albums => matches!(&self.album_scope, LibraryScope::All),
             LibraryTab::Artists => matches!(&self.artist_scope, LibraryScope::All),
             LibraryTab::Playlists => matches!(&self.playlist_scope, PlaylistScope::All),
             LibraryTab::Songs => false,
-        };
-        if can_set {
-            self.artwork_path_mode = true;
-            self.artwork_path_input.clear();
         }
     }
 
@@ -773,6 +886,7 @@ impl App {
         match self.active_tab {
             LibraryTab::Songs => {
                 self.song_sort = self.song_sort.next();
+                self.song_sort_descending = false;
                 self.sort_all_tracks();
             }
             LibraryTab::Albums => match self.album_scope {
@@ -782,6 +896,7 @@ impl App {
                 }
                 LibraryScope::Album(_) => {
                     self.song_sort = self.song_sort.next();
+                    self.song_sort_descending = false;
                     self.sort_scoped_tracks();
                 }
                 _ => {}
@@ -819,19 +934,64 @@ impl App {
                         .playlist_song_selected
                         .and_then(|i| self.playlist_track_indices(playlist_index).get(i).copied());
                     self.playlist_song_sort = self.playlist_song_sort.next();
-                    let sorted = self.playlist_track_indices(playlist_index);
+                    self.playlist_song_sort_descending = false;                    let sorted = self.playlist_track_indices(playlist_index);
                     self.playlist_song_selected =
                         selected_track.and_then(|track| sorted.iter().position(|&i| i == track));
-                    self.playlist_songs_offset = scroll_offset(
-                        self.playlist_song_selected,
-                        0,
-                        self.list_height,
-                    );
+                    self.playlist_songs_offset =
+                        scroll_offset(self.playlist_song_selected, 0, self.list_height);
                 }
             },
         }
     }
 
+    /// Pick a sort mode directly instead of cycling. Used by the GUI's
+    /// clickable table headers; picking the same mode again reverses it.
+    #[cfg(feature = "gui")]
+    pub fn set_song_sort(&mut self, sort: SongSort) {
+        match self.active_tab {
+            LibraryTab::Songs => {
+                self.song_sort_descending =
+                    self.song_sort == sort && !self.song_sort_descending;
+                self.song_sort = sort;
+                self.sort_all_tracks();
+            }
+            LibraryTab::Albums => {
+                if let LibraryScope::Album(_) = self.album_scope {
+                    self.song_sort_descending =
+                        self.song_sort == sort && !self.song_sort_descending;
+                    self.song_sort = sort;
+                    self.sort_scoped_tracks();
+                }
+            }
+            LibraryTab::Playlists => {
+                let PlaylistScope::Open(playlist_index) = self.playlist_scope else {
+                    return;
+                };
+                if self.playlists.get(playlist_index).is_some_and(|playlist| {
+                    matches!(
+                        playlist.name.to_lowercase().as_str(),
+                        "history" | "most played"
+                    )
+                }) {
+                    return;
+                }
+                self.playlist_song_sort_descending = self.playlist_song_sort == sort
+                    && !self.playlist_song_sort_descending;
+                let selected_track = self
+                    .playlist_song_selected
+                    .and_then(|i| self.playlist_track_indices(playlist_index).get(i).copied());
+                self.playlist_song_sort = sort;
+                let sorted = self.playlist_track_indices(playlist_index);
+                self.playlist_song_selected =
+                    selected_track.and_then(|track| sorted.iter().position(|&i| i == track));
+                self.playlist_songs_offset =
+                    scroll_offset(self.playlist_song_selected, 0, self.list_height);
+            }
+            LibraryTab::Artists => {}
+        }
+    }
+
+    #[cfg(feature = "tui")]
     pub fn sort_label(&self) -> &'static str {
         match self.active_tab {
             LibraryTab::Songs => self.song_sort.label(),
@@ -859,32 +1019,54 @@ impl App {
     }
 
     fn sort_all_tracks(&mut self) {
-        let selected = self.selected_index.and_then(|i| self.all_track_indices.get(i).copied());
-        sort_track_indices(&mut self.all_track_indices, &self.tracks, self.song_sort);
-        self.selected_index = selected.and_then(|id| self.all_track_indices.iter().position(|&i| i == id));
+        let selected = self
+            .selected_index
+            .and_then(|i| self.all_track_indices.get(i).copied());
+        sort_track_indices(
+            &mut self.all_track_indices,
+            &self.tracks,
+            self.song_sort,
+            self.song_sort_descending,
+        );
+        self.selected_index =
+            selected.and_then(|id| self.all_track_indices.iter().position(|&i| i == id));
         self.songs_offset = scroll_offset(self.selected_index, 0, self.list_height);
     }
 
     fn sort_scoped_tracks(&mut self) {
-        let selected = self.scoped_song_selected.and_then(|i| self.scoped_track_indices.get(i).copied());
-        sort_track_indices(&mut self.scoped_track_indices, &self.tracks, self.song_sort);
-        self.scoped_song_selected = selected.and_then(|id| self.scoped_track_indices.iter().position(|&i| i == id));
+        let selected = self
+            .scoped_song_selected
+            .and_then(|i| self.scoped_track_indices.get(i).copied());
+        sort_track_indices(
+            &mut self.scoped_track_indices,
+            &self.tracks,
+            self.song_sort,
+            self.song_sort_descending,
+        );
+        self.scoped_song_selected =
+            selected.and_then(|id| self.scoped_track_indices.iter().position(|&i| i == id));
         self.scoped_songs_offset =
             scroll_offset(self.scoped_song_selected, 0, self.scoped_list_height);
     }
 
     fn sort_albums(&mut self) {
-        let selected = self.album_selected.and_then(|i| self.albums.get(i).cloned());
+        let selected = self
+            .album_selected
+            .and_then(|i| self.albums.get(i).cloned());
         let selected_scoped = self
             .artist_scoped_album_selected
             .and_then(|i| self.scoped_albums.get(i).cloned());
         self.sort_album_names_in_place();
-        self.album_selected = selected.and_then(|name| self.albums.iter().position(|item| item == &name));
+        self.album_selected =
+            selected.and_then(|name| self.albums.iter().position(|item| item == &name));
         self.artist_scoped_album_selected = selected_scoped
             .and_then(|name| self.scoped_albums.iter().position(|item| item == &name));
         self.albums_offset = scroll_offset(self.album_selected, 0, self.list_height);
-        self.artist_albums_offset =
-            scroll_offset(self.artist_scoped_album_selected, 0, self.scoped_list_height);
+        self.artist_albums_offset = scroll_offset(
+            self.artist_scoped_album_selected,
+            0,
+            self.scoped_list_height,
+        );
     }
 
     fn sort_album_names_in_place(&mut self) {
@@ -899,45 +1081,61 @@ impl App {
     fn sort_album_names(&self, albums: &mut [String]) {
         match self.album_sort {
             AlbumSort::Name => albums.sort_by_cached_key(|album| album.to_lowercase()),
-            AlbumSort::Artist => {
-                albums.sort_by_cached_key(|album| (self.album_artist(album), album.clone()))
-            }
+            AlbumSort::Artist => albums.sort_by_cached_key(|album| {
+                (self.album_artist(album).to_lowercase(), album.to_lowercase())
+            }),
             AlbumSort::Tracks => albums.sort_by_cached_key(|album| {
-                (std::cmp::Reverse(self.album_track_count(album)), album.clone())
+                (
+                    std::cmp::Reverse(self.album_track_count(album)),
+                    album.clone(),
+                )
             }),
         }
     }
 
     fn sort_artist_albums(&mut self) {
-        let selected = self.artist_scoped_album_selected.and_then(|i| self.scoped_albums.get(i).cloned());
+        let selected = self
+            .artist_scoped_album_selected
+            .and_then(|i| self.scoped_albums.get(i).cloned());
         let mut scoped_albums = std::mem::take(&mut self.scoped_albums);
         self.sort_album_names(&mut scoped_albums);
         self.scoped_albums = scoped_albums;
-        self.artist_scoped_album_selected = selected.and_then(|name| self.scoped_albums.iter().position(|item| item == &name));
-        self.artist_albums_offset =
-            scroll_offset(self.artist_scoped_album_selected, 0, self.scoped_list_height);
+        self.artist_scoped_album_selected =
+            selected.and_then(|name| self.scoped_albums.iter().position(|item| item == &name));
+        self.artist_albums_offset = scroll_offset(
+            self.artist_scoped_album_selected,
+            0,
+            self.scoped_list_height,
+        );
     }
 
     fn sort_artists(&mut self) {
-        let selected = self.artist_selected.and_then(|i| self.artists.get(i).cloned());
+        let selected = self
+            .artist_selected
+            .and_then(|i| self.artists.get(i).cloned());
         let mut artists = std::mem::take(&mut self.artists);
         match self.artist_sort {
             ArtistSort::Name => artists.sort_by_cached_key(|artist| artist.to_lowercase()),
             ArtistSort::Albums => artists.sort_by_cached_key(|artist| {
                 (
                     std::cmp::Reverse(self.artist_album_count(artist)),
-                    artist.clone(),
+                    artist.to_lowercase(),
                 )
             }),
             ArtistSort::Songs => artists.sort_by_cached_key(|artist| {
                 (
                     std::cmp::Reverse(self.artist_song_count(artist)),
-                    artist.clone(),
+                    artist.to_lowercase(),
                 )
             }),
         }
         self.artists = artists;
-        self.artist_selected = selected.and_then(|name| self.artists.iter().position(|item| item == &name));
+        self.artist_selected = selected.and_then(|name| {
+            let key = crate::library::artists::key(&name);
+            self.artists
+                .iter()
+                .position(|artist| crate::library::artists::key(artist) == key)
+        });
         self.artists_offset = scroll_offset(self.artist_selected, 0, self.list_height);
     }
 
@@ -1016,16 +1214,14 @@ impl App {
                     .to_lowercase()
                     .cmp(&b.name.to_lowercase())
                     .then_with(|| a.name.cmp(&b.name)),
-                PlaylistSort::Tracks => b
-                    .track_paths
-                    .len()
-                    .cmp(&a.track_paths.len())
-                    .then_with(|| {
+                PlaylistSort::Tracks => {
+                    b.track_paths.len().cmp(&a.track_paths.len()).then_with(|| {
                         a.name
                             .to_lowercase()
                             .cmp(&b.name.to_lowercase())
                             .then_with(|| a.name.cmp(&b.name))
-                    }),
+                    })
+                }
             });
         };
         sort_playlists(&mut ordered);
@@ -1034,8 +1230,11 @@ impl App {
         ordered.append(&mut pinned);
         ordered.append(&mut unpinned);
         self.playlists = ordered;
-        self.playlist_selected = selected_name
-            .and_then(|name| self.playlists.iter().position(|playlist| playlist.name == name));
+        self.playlist_selected = selected_name.and_then(|name| {
+            self.playlists
+                .iter()
+                .position(|playlist| playlist.name == name)
+        });
         if let Some(name) = playing_playlist_name {
             if let Some(index) = self
                 .playlists
@@ -1080,26 +1279,76 @@ impl App {
         }
     }
 
-    pub fn confirm_artwork_path(&mut self) {
-        let key = self.selected_artwork_key();
-        let path = PathBuf::from(self.artwork_path_input.trim());
-        if let Some(key) = key {
-            if path.is_file() {
-                if let Some(thumb) = crate::library::artwork::from_path(&key, &path) {
-                    self.artwork_protocols
-                        .insert(key.clone(), self.picker.new_resize_protocol(thumb.image()));
-                    self.artwork.insert(key.clone(), thumb);
-                    self.artwork_overrides.insert(key, path);
-                }
-                self.cancel_artwork_path();
-            }
+    /// Human-readable label for the item whose artwork "e" will edit.
+    #[cfg(feature = "gui")]
+    pub fn artwork_target_label(&self) -> Option<String> {
+        match self.active_tab {
+            LibraryTab::Albums => self
+                .album_selected
+                .and_then(|i| self.albums.get(i))
+                .map(|album| format!("Album · {album}")),
+            LibraryTab::Artists => self
+                .artist_selected
+                .and_then(|i| self.artists.get(i))
+                .map(|artist| format!("Artist · {artist}")),
+            LibraryTab::Playlists => self
+                .playlist_selected
+                .and_then(|i| self.playlists.get(i))
+                .map(|playlist| format!("Playlist · {}", playlist.name)),
+            _ => None,
         }
     }
 
+    pub fn confirm_artwork_path(&mut self) -> Result<()> {
+        let key = self
+            .selected_artwork_key()
+            .ok_or_else(|| anyhow!("No artwork item is selected"))?;
+        let input = self.artwork_path_input.trim().to_string();
+        if input.is_empty() {
+            return Err(anyhow!("Enter an image URL"));
+        }
+
+        let (thumb, source) = if input.starts_with("http://") || input.starts_with("https://") {
+            let downloaded = crate::audio::metadata::download_artwork_to_temp(&input)
+                .map_err(|error| anyhow!("Could not fetch artwork: {error}"))?;
+            let bytes = std::fs::read(downloaded.path())
+                .map_err(|error| anyhow!("Could not read downloaded artwork: {error}"))?;
+            let thumb = crate::library::artwork::from_bytes(&key, &bytes)
+                .ok_or_else(|| anyhow!("Could not decode artwork from URL"))?;
+            // Store the cached thumbnail path so the override survives a
+            // restart without downloading the image again.
+            (thumb, crate::library::artwork::thumbnail_path(&key))
+        } else {
+            let path = PathBuf::from(&input);
+            if !path.is_file() {
+                return Err(anyhow!(
+                    "Artwork file does not exist: {} (paste an http(s) image URL instead)",
+                    path.display()
+                ));
+            }
+            let thumb = crate::library::artwork::from_path(&key, &path)
+                .ok_or_else(|| anyhow!("Could not decode artwork image: {}", path.display()))?;
+            (thumb, path)
+        };
+
+        #[cfg(feature = "tui")]
+        self.artwork_protocols
+            .insert(key.clone(), self.picker.new_resize_protocol(thumb.image()));
+        self.artwork.insert(key.clone(), thumb);
+        self.note_artwork_changed(&key);
+        self.artwork_pending.remove(&key);
+        self.artwork_missing.remove(&key);
+        self.artwork_overrides.insert(key, source);
+        self.cancel_artwork_path();
+        Ok(())
+    }
+
+    #[cfg(feature = "tui")]
     pub fn new_playlist_type_char(&mut self, c: char) {
         self.new_playlist_name.push(c);
     }
 
+    #[cfg(feature = "tui")]
     pub fn new_playlist_backspace(&mut self) {
         self.new_playlist_name.pop();
     }
@@ -1123,7 +1372,7 @@ impl App {
 
         let path = self.music_dir.join(format!("{}.m3u", name));
         let playlist = Playlist::new(name, Some(path));
-        let _ = playlist.save();
+        playlist.save()?;
         self.playlists.push(playlist);
         self.playlist_selected = Some(self.playlists.len() - 1);
         self.reorder_playlists();
@@ -1199,7 +1448,7 @@ impl App {
             ConfirmAction::DeletePlaylist(pi) => {
                 // Delete the m3u file
                 if let Some(path) = &self.playlists[pi].path {
-                    let _ = std::fs::remove_file(path);
+                    std::fs::remove_file(path)?;
                 }
                 self.playlists.remove(pi);
                 // Fix cursor
@@ -1247,6 +1496,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "tui")]
     pub fn toggle_lyrics(&mut self) {
         if self.layout_mode.ends_with("_lyrics") {
             // Remove the suffix
@@ -1259,6 +1509,7 @@ impl App {
 
     /// Toggle the views used when clicking the album art:
     /// view 2 with lyrics <-> view 1 without lyrics.
+    #[cfg(feature = "tui")]
     pub fn toggle_cover_lyrics_view(&mut self) {
         if self.layout_mode == "clean_lyrics" {
             self.layout_mode = "default".to_string();
@@ -1301,10 +1552,32 @@ impl App {
     }
 
     pub fn start_metadata_edit(&mut self) {
+        // On a collection tab the selection is an album, artist or playlist,
+        // so "e" edits that item's image instead of falling back to the
+        // currently playing song's tags.
+        if self.artwork_edit_context() && self.selected_artwork_key().is_some() {
+            self.start_artwork_path();
+            return;
+        }
         let index = match self.target_track_index() {
             Some(index) => index,
             None => return,
         };
+        self.start_metadata_edit_at(index);
+    }
+
+    /// Edit the metadata of the currently playing song, ignoring the list
+    /// selection.
+    #[cfg(feature = "gui")]
+    pub fn start_metadata_edit_current(&mut self) {
+        let index = match self.current_index {
+            Some(index) => index,
+            None => return,
+        };
+        self.start_metadata_edit_at(index);
+    }
+
+    fn start_metadata_edit_at(&mut self, index: usize) {
         let track = &self.tracks[index];
 
         self.metadata_edit_values = [
@@ -1331,15 +1604,18 @@ impl App {
         self.metadata_edit_error = None;
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_next_field(&mut self) {
         self.metadata_edit_field = (self.metadata_edit_field + 1) % self.metadata_edit_values.len();
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_prev_field(&mut self) {
         let count = self.metadata_edit_values.len();
         self.metadata_edit_field = (self.metadata_edit_field + count - 1) % count;
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_insert_char(&mut self, c: char) {
         let field = self.metadata_edit_field;
         let cursor = self.metadata_edit_cursors[field];
@@ -1349,6 +1625,7 @@ impl App {
         self.metadata_edit_cursors[field] = cursor + 1;
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_backspace(&mut self) {
         let field = self.metadata_edit_field;
         let cursor = self.metadata_edit_cursors[field];
@@ -1362,6 +1639,7 @@ impl App {
         self.metadata_edit_cursors[field] = cursor - 1;
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_delete(&mut self) {
         let field = self.metadata_edit_field;
         let cursor = self.metadata_edit_cursors[field];
@@ -1375,11 +1653,13 @@ impl App {
         value.replace_range(start..end, "");
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_cursor_left(&mut self) {
         let field = self.metadata_edit_field;
         self.metadata_edit_cursors[field] = self.metadata_edit_cursors[field].saturating_sub(1);
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_cursor_right(&mut self) {
         let field = self.metadata_edit_field;
         let length = self.metadata_edit_values[field].chars().count();
@@ -1388,10 +1668,12 @@ impl App {
         }
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_cursor_home(&mut self) {
         self.metadata_edit_cursors[self.metadata_edit_field] = 0;
     }
 
+    #[cfg(feature = "tui")]
     pub fn metadata_edit_cursor_end(&mut self) {
         let field = self.metadata_edit_field;
         self.metadata_edit_cursors[field] = self.metadata_edit_values[field].chars().count();
@@ -1429,9 +1711,7 @@ impl App {
                 }
             }
         };
-        let artwork_path = downloaded_artwork
-            .as_ref()
-            .map(|artwork| artwork.path());
+        let artwork_path = downloaded_artwork.as_ref().map(|artwork| artwork.path());
 
         match crate::audio::metadata::write_track_metadata(
             &track_path,
@@ -1453,6 +1733,7 @@ impl App {
                     self.tracks[index].has_cover = true;
                     self.refresh_album_artwork(&album, artwork_path);
                     if self.current_index == Some(index) {
+                        #[cfg(feature = "tui")]
                         let _ = self.refresh_cover(index);
                     }
                 }
@@ -1472,6 +1753,13 @@ impl App {
 
                 self.cancel_metadata_edit();
                 self.rebuild_albums_and_artists();
+                if let LibraryScope::Artist(name) = self.artist_scope.clone() {
+                    match self.find_artist(&name) {
+                        Some(canonical) => self.artist_scope = LibraryScope::Artist(canonical),
+                        None => self.artist_scope = LibraryScope::All,
+                    }
+                    self.rebuild_artist_cache();
+                }
                 self.sort_all_tracks();
                 self.sort_scoped_tracks();
                 self.sort_albums();
@@ -1498,10 +1786,10 @@ impl App {
             return;
         };
         if let Some(thumb) = crate::library::artwork::from_bytes(&key, &bytes) {
-            self.artwork_protocols.insert(
-                key.clone(),
-                self.picker.new_resize_protocol(thumb.image()),
-            );
+            #[cfg(feature = "tui")]
+            self.artwork_protocols
+                .insert(key.clone(), self.picker.new_resize_protocol(thumb.image()));
+            self.note_artwork_changed(&key);
             self.artwork.insert(key, thumb);
         }
     }
@@ -1523,6 +1811,18 @@ impl App {
                 .map(|&i| self.tracks[i].path.clone()),
             _ => self.current_track().map(|t| t.path.clone()),
         };
+        self.open_save_mode_for_track(track_path);
+    }
+
+    /// Open the "add to playlist" picker for the currently playing song,
+    /// regardless of which list row happens to be selected.
+    #[cfg(feature = "gui")]
+    pub fn open_save_mode_for_current(&mut self) {
+        let track_path = self.current_track().map(|track| track.path.clone());
+        self.open_save_mode_for_track(track_path);
+    }
+
+    fn open_save_mode_for_track(&mut self, track_path: Option<PathBuf>) {
         let track_path = match track_path {
             Some(p) => p,
             _none => return,
@@ -1532,13 +1832,17 @@ impl App {
             .playlists
             .iter()
             .enumerate()
-            .filter(|(_, pl)| !pl.track_paths.contains(&track_path))
+            .filter(|(_, pl)| {
+                !pl.track_paths.contains(&track_path)
+                    && !pl.name.eq_ignore_ascii_case("most played")
+            })
             .map(|(i, _)| i)
             .collect();
 
         if self.save_candidates.is_empty() {
             return;
         }
+        self.save_track_path = Some(track_path);
         self.save_mode = true;
         self.save_selected = 0;
         self.save_offset = 0;
@@ -1549,16 +1853,12 @@ impl App {
             return Ok(());
         }
 
-        let track_path = match self.active_tab {
-            LibraryTab::Songs => self
-                .selected_index
-                .and_then(|i| self.all_track_indices.get(i))
-                .map(|&i| self.tracks[i].path.clone()),
-            _ => self.current_track().map(|t| t.path.clone()),
-        };
-        let track_path = match track_path {
-            Some(p) => p,
-            _none => return Ok(()),
+        let track_path = match self.save_track_path.take() {
+            Some(path) => path,
+            None => {
+                self.save_mode = false;
+                return Ok(());
+            }
         };
 
         if let Some(&pi) = self.save_candidates.get(self.save_selected) {
@@ -1572,6 +1872,7 @@ impl App {
 
     pub fn cancel_save(&mut self) {
         self.save_mode = false;
+        self.save_track_path = None;
     }
 
     pub fn drain_ipc(&mut self) -> anyhow::Result<()> {
@@ -1740,15 +2041,29 @@ impl App {
         for (playlist_key, album_key) in entries {
             if let Some(thumb) = self.artwork.get(&album_key).cloned() {
                 if !self.artwork_overrides.contains_key(&playlist_key) {
+                    #[cfg(feature = "tui")]
                     self.artwork_protocols.insert(
                         playlist_key.clone(),
                         self.picker.new_resize_protocol(thumb.image()),
                     );
                     self.artwork.insert(playlist_key.clone(), thumb);
+                    self.note_artwork_changed(&playlist_key);
                 }
                 self.artwork_pending.remove(&playlist_key);
             }
         }
+    }
+
+    /// Record that the thumbnail for a key changed so the GUI can refresh its
+    /// cached texture.
+    fn note_artwork_changed(&mut self, key: &str) {
+        let next = self
+            .artwork_revisions
+            .get(key)
+            .copied()
+            .unwrap_or(0)
+            .wrapping_add(1);
+        self.artwork_revisions.insert(key.to_string(), next);
     }
 
     pub fn drain_artwork(&mut self) {
@@ -1757,11 +2072,11 @@ impl App {
             if !self.artwork_overrides.contains_key(&key) {
                 match thumb {
                     Some(thumb) => {
-                        self.artwork_protocols.insert(
-                            key.clone(),
-                            self.picker.new_resize_protocol(thumb.image()),
-                        );
+                        #[cfg(feature = "tui")]
+                        self.artwork_protocols
+                            .insert(key.clone(), self.picker.new_resize_protocol(thumb.image()));
                         self.artwork.insert(key.clone(), thumb);
+                        self.note_artwork_changed(&key);
                         self.artwork_missing.remove(&key);
                         if key.starts_with("album:") {
                             received_artwork = true;
@@ -1882,11 +2197,17 @@ impl App {
         for path in &playlist.track_paths {
             if let Some(&index) = self.track_indices.get(path) {
                 if self.tracks[index].has_cover {
-                    source = Some((self.tracks[index].path.clone(), self.tracks[index].album.clone()));
+                    source = Some((
+                        self.tracks[index].path.clone(),
+                        self.tracks[index].album.clone(),
+                    ));
                     break;
                 }
                 if source.is_none() {
-                    source = Some((self.tracks[index].path.clone(), self.tracks[index].album.clone()));
+                    source = Some((
+                        self.tracks[index].path.clone(),
+                        self.tracks[index].album.clone(),
+                    ));
                 }
             }
         }
@@ -1938,7 +2259,7 @@ impl App {
             .and_then(|i| self.scoped_albums.get(i))
             .cloned();
         let mut seen_albums = std::collections::HashSet::new();
-        let mut seen_artists = std::collections::HashSet::new();
+        let mut seen_artists: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut albums = Vec::new();
         let mut artists = Vec::new();
         let mut album_track_counts: HashMap<String, usize> = HashMap::new();
@@ -1947,22 +2268,61 @@ impl App {
         let mut artist_albums: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
         let mut album_cover_paths: HashMap<String, PathBuf> = HashMap::new();
 
+        // Pick one spelling per artist, case-insensitively, before counting so
+        // "Daft Punk" and "daft punk" do not become two rows.
+        let mut canonicals: HashMap<String, String> = HashMap::new();
+        for t in &self.tracks {
+            let mut names = crate::library::artists::split_credit(&t.artist);
+            if names.is_empty() {
+                names.push("Unknown Artist".to_string());
+            }
+            for name in names {
+                canonicals
+                    .entry(crate::library::artists::key(&name))
+                    .or_insert(name);
+            }
+        }
+
         for t in &self.tracks {
             if seen_albums.insert(t.album.clone()) {
                 albums.push(t.album.clone());
             }
-            if seen_artists.insert(t.artist.clone()) {
-                artists.push(t.artist.clone());
-            }
             *album_track_counts.entry(t.album.clone()).or_insert(0) += 1;
-            *artist_song_counts.entry(t.artist.clone()).or_insert(0) += 1;
+
+            let mut names = crate::library::artists::split_credit(&t.artist);
+            if names.is_empty() {
+                names.push("Unknown Artist".to_string());
+            }
+            let mut credits = Vec::new();
+            let mut seen_credit: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for name in names {
+                let key = crate::library::artists::key(&name);
+                if !seen_credit.insert(key.clone()) {
+                    continue;
+                }
+                let name = canonicals.get(&key).cloned().unwrap_or(name);
+                let canonical_key = crate::library::artists::key(&name);
+                if seen_artists.insert(canonical_key) {
+                    artists.push(name.clone());
+                }
+                *artist_song_counts.entry(name.clone()).or_insert(0) += 1;
+                artist_albums
+                    .entry(name.clone())
+                    .or_default()
+                    .insert(t.album.clone());
+                credits.push(name);
+            }
+
+            // The first credited artist represents the album in album lists.
+            let album_artist = credits
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Unknown Artist".to_string());
             album_artist_map
                 .entry(t.album.clone())
-                .or_insert_with(|| t.artist.to_lowercase());
-            artist_albums
-                .entry(t.artist.clone())
-                .or_default()
-                .insert(t.album.clone());
+                .or_insert(album_artist);
+
             if t.has_cover {
                 album_cover_paths
                     .entry(t.album.clone())
@@ -1986,10 +2346,14 @@ impl App {
 
         self.rebuild_album_cache();
         self.rebuild_artist_cache();
-        self.album_selected = selected_album
-            .and_then(|name| self.albums.iter().position(|item| item == &name));
-        self.artist_selected = selected_artist
-            .and_then(|name| self.artists.iter().position(|item| item == &name));
+        self.album_selected =
+            selected_album.and_then(|name| self.albums.iter().position(|item| item == &name));
+        self.artist_selected = selected_artist.and_then(|name| {
+            let key = crate::library::artists::key(&name);
+            self.artists
+                .iter()
+                .position(|artist| crate::library::artists::key(artist) == key)
+        });
         self.artist_scoped_album_selected = selected_artist_album
             .and_then(|name| self.scoped_albums.iter().position(|item| item == &name));
     }
@@ -2019,20 +2383,210 @@ impl App {
                 self.scoped_albums = self.albums.clone();
             }
             LibraryScope::Artist(artist) => {
-                let artist = artist.clone();
+                let wanted = crate::library::artists::key(artist);
                 self.scoped_albums = self
                     .albums
                     .iter()
                     .filter(|album| {
-                        self.tracks
-                            .iter()
-                            .any(|t| &t.artist == &artist && &t.album == *album)
+                        self.tracks.iter().any(|t| {
+                            &t.album == *album
+                                && crate::library::artists::split_credit(&t.artist)
+                                    .iter()
+                                    .any(|name| crate::library::artists::key(name) == wanted)
+                        })
                     })
                     .cloned()
                     .collect();
             }
             _ => {}
         }
+    }
+
+    /// Re-scan the music folder and rebuild the library if files were added or
+    /// removed. Existing tracks keep their loaded metadata and the current
+    /// song, selection, queue and shuffle order are restored by path.
+    /// Returns true when the library changed.
+    #[cfg(feature = "gui")]
+    pub fn refresh_library(&mut self) -> Result<bool> {
+        // Indices in the metadata stream point into the track list, so avoid
+        // reshuffling it until the initial scan has finished loading.
+        if self.loading {
+            return Ok(false);
+        }
+
+        let scanned = scan_directory(&self.music_dir)?;
+        let old_paths: Vec<PathBuf> = self.tracks.iter().map(|t| t.path.clone()).collect();
+        let new_paths: Vec<PathBuf> = scanned.iter().map(|t| t.path.clone()).collect();
+        if old_paths == new_paths {
+            return Ok(false);
+        }
+
+        let current_path = self.current_track().map(|t| t.path.clone());
+        let selected_song_path = self
+            .selected_track_index()
+            .and_then(|index| self.tracks.get(index))
+            .map(|track| track.path.clone());
+        let scoped_song_path = if let LibraryScope::Album(_) = &self.album_scope {
+            self.scoped_song_selected
+                .and_then(|position| self.scoped_track_indices.get(position))
+                .and_then(|&index| self.tracks.get(index))
+                .map(|track| track.path.clone())
+        } else {
+            None
+        };
+        let playlist_song_path = if let PlaylistScope::Open(index) = &self.playlist_scope {
+            self.playlist_song_selected
+                .and_then(|position| self.playlist_track_indices(*index).get(position).copied())
+                .and_then(|index| self.tracks.get(index))
+                .map(|track| track.path.clone())
+        } else {
+            None
+        };
+        let selected_album = self.album_selected.and_then(|i| self.albums.get(i)).cloned();
+        let selected_artist = self
+            .artist_selected
+            .and_then(|i| self.artists.get(i))
+            .cloned();
+        let selected_artist_album = self
+            .artist_scoped_album_selected
+            .and_then(|i| self.scoped_albums.get(i))
+            .cloned();
+        let shuffle_paths: Vec<PathBuf> = self
+            .shuffle_order
+            .iter()
+            .filter_map(|&index| self.tracks.get(index))
+            .map(|track| track.path.clone())
+            .collect();
+        #[cfg(feature = "gui")]
+        let queue_paths: Vec<PathBuf> = self
+            .queue
+            .iter()
+            .filter_map(|&index| self.tracks.get(index))
+            .map(|track| track.path.clone())
+            .collect();
+        #[cfg(feature = "gui")]
+        let queue_resume_path = self
+            .queue_resume_index
+            .and_then(|index| self.tracks.get(index))
+            .map(|track| track.path.clone());
+
+        let mut existing: HashMap<PathBuf, Track> = self
+            .tracks
+            .drain(..)
+            .map(|track| (track.path.clone(), track))
+            .collect();
+        let fresh_paths: Vec<PathBuf> = new_paths
+            .iter()
+            .filter(|path| !existing.contains_key(*path))
+            .cloned()
+            .collect();
+        let mut fresh: HashMap<PathBuf, Track> =
+            crate::library::cache::load_metadata_sync(&fresh_paths)
+                .into_iter()
+                .map(|track| (track.path.clone(), track))
+                .collect();
+        let tracks: Vec<Track> = scanned
+            .into_iter()
+            .map(|stub| {
+                existing
+                    .remove(&stub.path)
+                    .or_else(|| fresh.remove(&stub.path))
+                    .unwrap_or(stub)
+            })
+            .collect();
+
+        self.tracks = tracks;
+        self.track_indices = self
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(index, track)| (track.path.clone(), index))
+            .collect();
+        self.search_terms = self.tracks.iter().map(SearchTerms::from_track).collect();
+        self.all_track_indices = (0..self.tracks.len()).collect();
+
+        self.current_index = current_path
+            .as_ref()
+            .and_then(|path| self.track_indices.get(path).copied());
+        if current_path.is_some() && self.current_index.is_none() {
+            self.player.stop();
+            self.lyrics = None;
+            self.lyrics_revision = self.lyrics_revision.wrapping_add(1);
+            self.lyrics_loading = false;
+            self.lyrics_flagged = false;
+        }
+
+        self.rebuild_albums_and_artists();
+        if let LibraryScope::Album(name) = self.album_scope.clone() {
+            if !self.albums.contains(&name) {
+                self.album_scope = LibraryScope::All;
+            }
+        }
+        if let LibraryScope::Artist(name) = self.artist_scope.clone() {
+            match self.find_artist(&name) {
+                Some(canonical) => self.artist_scope = LibraryScope::Artist(canonical),
+                None => self.artist_scope = LibraryScope::All,
+            }
+        }
+        self.rebuild_album_cache();
+        self.rebuild_artist_cache();
+        self.sort_all_tracks();
+        self.sort_scoped_tracks();
+        self.sort_albums();
+        self.sort_artists();
+        self.rebuild_playlist_artwork();
+
+        self.selected_index = selected_song_path
+            .as_ref()
+            .and_then(|path| self.track_indices.get(path).copied())
+            .and_then(|index| self.all_track_indices.iter().position(|&i| i == index));
+        self.scoped_song_selected = scoped_song_path
+            .as_ref()
+            .and_then(|path| self.track_indices.get(path).copied())
+            .and_then(|index| self.scoped_track_indices.iter().position(|&i| i == index));
+        if let PlaylistScope::Open(index) = &self.playlist_scope {
+            self.playlist_song_selected = playlist_song_path.as_ref().and_then(|path| {
+                let target = self.track_indices.get(path).copied()?;
+                self.playlist_track_indices(*index)
+                    .iter()
+                    .position(|&track_index| track_index == target)
+            });
+        }
+        self.album_selected = selected_album
+            .and_then(|name| self.albums.iter().position(|album| album == &name));
+        self.artist_selected = selected_artist.and_then(|name| {
+            let key = crate::library::artists::key(&name);
+            self.artists
+                .iter()
+                .position(|artist| crate::library::artists::key(artist) == key)
+        });
+        self.artist_scoped_album_selected = selected_artist_album
+            .and_then(|name| self.scoped_albums.iter().position(|album| album == &name));
+
+        self.shuffle_order = shuffle_paths
+            .iter()
+            .filter_map(|path| self.track_indices.get(path).copied())
+            .collect();
+        #[cfg(feature = "gui")]
+        {
+            self.queue = queue_paths
+                .iter()
+                .filter_map(|path| self.track_indices.get(path).copied())
+                .collect();
+            self.queue_resume_index = queue_resume_path
+                .as_ref()
+                .and_then(|path| self.track_indices.get(path).copied());
+        }
+
+        if !self.search_query.is_empty() {
+            let query = self.search_query.clone();
+            self.set_search_query(query);
+        }
+
+        self.loaded_count = self.tracks.len();
+        self.loading = false;
+        self.needs_full_redraw = true;
+        Ok(true)
     }
 
     pub fn current_track(&self) -> Option<&Track> {
@@ -2044,22 +2598,55 @@ impl App {
             return Ok(());
         }
         self.current_index = Some(index);
+        self.play_context_position = None;
         let path = self.tracks[index].path.clone();
         self.record_play(&path);
         let gain = self.tracks[index].replaygain;
         self.player.play_with_gain(&path, gain)?;
+        #[cfg(feature = "tui")]
         self.refresh_cover(index)?;
         self.update_mpris_state();
         self.fetch_lyrics(index);
         Ok(())
     }
 
+    /// Restart playback of the currently playing song.
+    #[cfg(feature = "gui")]
+    pub fn play_current(&mut self) -> Result<()> {
+        match self.current_index {
+            Some(index) => {
+                let position = self.play_context_position;
+                self.play_index(index)?;
+                self.play_context_position = position;
+                Ok(())
+            }
+            None => self.play_selected(),
+        }
+    }
+
     fn record_play(&mut self, path: &Path) {
-        self.history.retain(|item| item != path);
-        self.history.insert(0, path.to_path_buf());
-        self.history.truncate(100);
         *self.play_counts.entry(path.to_path_buf()).or_insert(0) += 1;
+
+        if self.playing_from_history() {
+            // Do not disturb the History list while the user is listening to
+            // it; remember the play and commit it when playback moves on.
+            self.pending_history.insert(0, path.to_path_buf());
+            self.pending_history.truncate(HISTORY_LIMIT);
+        } else {
+            commit_history_play(&mut self.history, &mut self.pending_history, path);
+        }
         self.refresh_generated_playlists();
+    }
+
+    /// True when playback was started from the generated History playlist.
+    fn playing_from_history(&self) -> bool {
+        match self.play_context {
+            PlayContext::Playlist(index) => self
+                .playlists
+                .get(index)
+                .is_some_and(|playlist| playlist.name.eq_ignore_ascii_case("history")),
+            _ => false,
+        }
     }
 
     fn refresh_generated_playlists(&mut self) {
@@ -2092,10 +2679,19 @@ impl App {
         let path = track.path.clone(); // ← add this
 
         self.lyrics = None;
+        self.lyrics_revision = self.lyrics_revision.wrapping_add(1);
         self.lyrics_loading = true;
         self.lyrics_error = false;
         self.lyrics_scroll = None;
         self.lyrics_clicked_line = None;
+        self.lyrics_flagged = crate::lyrics::has_flagged(&path);
+
+        // Flagged lyrics stay hidden and are not looked up again.
+        if self.lyrics_flagged {
+            self.lyrics_loading = false;
+            self.lyrics_rx = None;
+            return;
+        }
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.lyrics_rx = Some(rx);
@@ -2118,6 +2714,7 @@ impl App {
                         if self.shuffle {
                             self.rebuild_shuffle();
                         }
+                        self.play_context_position = Some(if self.shuffle { 0 } else { pos });
                     }
                 }
             }
@@ -2138,6 +2735,8 @@ impl App {
                             if self.shuffle {
                                 self.rebuild_shuffle();
                             }
+                            self.play_context_position =
+                                Some(if self.shuffle { 0 } else { pos });
                         }
                     }
                 }
@@ -2154,12 +2753,9 @@ impl App {
                 LibraryScope::Artist(_) => {
                     if let Some(ai) = self.artist_scoped_album_selected {
                         if let Some(album) = self.scoped_albums.get(ai).cloned() {
-                            self.album_return_artist = match &self.artist_scope {
-                                LibraryScope::Artist(artist) => Some(artist.clone()),
-                                _ => None,
-                            };
-                            self.active_tab = LibraryTab::Albums;
-                            self.enter_album(album);
+                            if let LibraryScope::Artist(artist) = &self.artist_scope {
+                                self.enter_album_from_artist(artist.clone(), album);
+                            }
                         }
                     }
                 }
@@ -2181,6 +2777,8 @@ impl App {
                             if self.shuffle {
                                 self.rebuild_shuffle();
                             }
+                            self.play_context_position =
+                                Some(if self.shuffle { 0 } else { si });
                         }
                     }
                 }
@@ -2228,6 +2826,17 @@ impl App {
         };
         self.player.seek(&path, time)?;
         self.player.finish_seek()
+    }
+
+    pub fn step_synced_lyrics(&mut self, forward: bool) -> Result<()> {
+        let next_time = self
+            .lyrics
+            .as_ref()
+            .and_then(|lyrics| lyrics.adjacent_line_time(self.player.elapsed(), forward));
+        if let Some(time) = next_time {
+            self.seek_to_lyric(time)?;
+        }
+        Ok(())
     }
 
     pub fn move_selected_song(&mut self, to_bottom: bool) -> Result<()> {
@@ -2284,9 +2893,50 @@ impl App {
     pub fn toggle_play(&mut self) -> Result<()> {
         if self.current_index.is_none() {
             self.play_selected()?;
+        } else if self.player.is_finished() {
+            // Playback stopped at the end of the album/playlist; replay the
+            // current track instead of resuming a finished process.
+            if let Some(index) = self.current_index {
+                let position = self.play_context_position;
+                self.play_index(index)?;
+                self.play_context_position = position;
+            }
         } else {
             self.player.toggle_pause();
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn queue_selected_track(&mut self) {
+        let Some(index) = self.selected_track_index() else {
+            self.show_notice("Select a song to add it to the queue");
+            return;
+        };
+        self.queue.push(index);
+        self.show_notice(format!("Queued: {}", self.tracks[index].title));
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn remove_queued_track(&mut self, position: usize) {
+        if position < self.queue.len() {
+            self.queue.remove(position);
+        }
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn play_queued_track(&mut self, position: usize) -> Result<()> {
+        if position >= self.queue.len() {
+            return Ok(());
+        }
+        if self.queue_resume_index.is_none() {
+            self.queue_resume_index = self.current_index;
+            self.queue_resume_position = self.play_context_position;
+        }
+        let index = self.queue.remove(position);
+        self.play_index(index)?;
+        self.sync_cursor_to_track(index);
+        self.center_playing_request = true;
         Ok(())
     }
 
@@ -2328,51 +2978,146 @@ impl App {
         }
     }
 
+    /// Whether pressing Next can move forward. With repeat off, the last track
+    /// of the current album/playlist is a hard stop; queued tracks still play.
+    #[cfg(feature = "gui")]
+    pub fn can_next(&self) -> bool {
+        if !self.queue.is_empty() {
+            return true;
+        }
+        if self.repeat != RepeatMode::Off {
+            return true;
+        }
+        let indices = self.current_play_indices();
+        match self.next_anchor_position(&indices) {
+            Some(pos) => pos + 1 < indices.len(),
+            None => true,
+        }
+    }
+
+    /// Whether pressing Previous can move backward. With repeat off, the
+    /// first track of the current album/playlist is a hard stop.
+    #[cfg(feature = "gui")]
+    pub fn can_prev(&self) -> bool {
+        if self.repeat != RepeatMode::Off {
+            return true;
+        }
+        let indices = self.current_play_indices();
+        match self.current_context_position(&indices) {
+            Some(pos) => pos > 0,
+            None => true,
+        }
+    }
+
+    /// Index of the current track inside the active playback context. The
+    /// remembered position is preferred so duplicate playlist entries (for
+    /// example the same song twice in History) stay distinct.
+    fn current_context_position(&self, indices: &[usize]) -> Option<usize> {
+        resolve_context_position(self.current_index, self.play_context_position, indices)
+    }
+
+    /// Position that "next" will continue from. Once the manual queue is
+    /// empty, playback resumes after the song that was playing before the
+    /// queue was used, not after the last queued song.
+    fn next_anchor_position(&self, indices: &[usize]) -> Option<usize> {
+        #[cfg(feature = "gui")]
+        if self.queue.is_empty() {
+            if let Some(resume) = self.queue_resume_index {
+                return resolve_context_position(
+                    Some(resume),
+                    self.queue_resume_position,
+                    indices,
+                );
+            }
+        }
+        self.current_context_position(indices)
+    }
+
     pub fn next_track(&mut self) -> Result<()> {
+        #[cfg(feature = "gui")]
+        if !self.queue.is_empty() {
+            if self.queue_resume_index.is_none() {
+                self.queue_resume_index = self.current_index;
+                self.queue_resume_position = self.play_context_position;
+            }
+            let index = self.queue.remove(0);
+            self.play_index(index)?;
+            self.sync_cursor_to_track(index);
+            self.center_playing_request = true;
+            return Ok(());
+        }
+        // True when the manual queue just ran out. The cursor was left on the
+        // last queued song, so it must follow playback back into the list.
+        let mut resumed_from_queue = false;
+        #[cfg(feature = "gui")]
+        if let Some(resume_index) = self.queue_resume_index.take() {
+            self.current_index = Some(resume_index);
+            self.play_context_position = self.queue_resume_position.take();
+            resumed_from_queue = true;
+        }
+
         let indices = self.current_play_indices();
         if indices.is_empty() {
             return Ok(());
         }
 
-        let current_pos = match self
-            .current_index
-            .and_then(|ci| indices.iter().position(|&i| i == ci))
-        {
+        let current_pos = match self.current_context_position(&indices) {
             Some(pos) => pos,
             _none => return Ok(()),
         };
 
-        let was_in_sync = self.is_selection_in_sync();
+        let was_in_sync = resumed_from_queue || self.is_selection_in_sync();
+        // Without repeat, the end of the album/playlist context is a hard
+        // stop: the next button must not wrap back to the first track.
+        if self.repeat == RepeatMode::Off && current_pos + 1 >= indices.len() {
+            return Ok(());
+        }
         let next_pos = (current_pos + 1) % indices.len();
         self.play_index(indices[next_pos])?;
+        self.play_context_position = Some(next_pos);
 
         if was_in_sync {
             self.sync_cursor_to_track(indices[next_pos]);
+        }
+        #[cfg(feature = "gui")]
+        if resumed_from_queue {
+            self.center_playing_request = true;
         }
         Ok(())
     }
 
     pub fn prev_track(&mut self) -> Result<()> {
+        #[cfg(feature = "gui")]
+        if let Some(index) = self.queue_resume_index {
+            self.play_index(index)?;
+            self.current_index = Some(index);
+            self.play_context_position = self.queue_resume_position.take();
+            self.sync_cursor_to_track(index);
+            return Ok(());
+        }
+
         let indices = self.current_play_indices();
         if indices.is_empty() {
             return Ok(());
         }
 
-        let current_pos = match self
-            .current_index
-            .and_then(|ci| indices.iter().position(|&i| i == ci))
-        {
+        let current_pos = match self.current_context_position(&indices) {
             Some(pos) => pos,
             _none => return Ok(()),
         };
 
         let was_in_sync = self.is_selection_in_sync();
+        // Without repeat, the start of the album/playlist is a hard stop too.
+        if self.repeat == RepeatMode::Off && current_pos == 0 {
+            return Ok(());
+        }
         let prev_pos = if current_pos == 0 {
             indices.len() - 1
         } else {
             current_pos - 1
         };
         self.play_index(indices[prev_pos])?;
+        self.play_context_position = Some(prev_pos);
 
         if was_in_sync {
             self.sync_cursor_to_track(indices[prev_pos]);
@@ -2385,7 +3130,11 @@ impl App {
             LibraryTab::Songs => {
                 self.selected_index = self.all_track_indices.iter().position(|&i| i == real_idx);
                 self.songs_offset = if self.shuffle {
-                    center_offset(self.selected_index, self.list_height)
+                    center_offset(
+                        self.selected_index,
+                        self.list_height,
+                        self.all_track_indices.len(),
+                    )
                 } else {
                     scroll_offset(self.selected_index, self.songs_offset, self.list_height)
                 };
@@ -2397,7 +3146,11 @@ impl App {
                         .iter()
                         .position(|&i| i == real_idx);
                     self.scoped_songs_offset = if self.shuffle {
-                        center_offset(self.scoped_song_selected, self.scoped_list_height)
+                        center_offset(
+                            self.scoped_song_selected,
+                            self.scoped_list_height,
+                            self.scoped_track_indices.len(),
+                        )
                     } else {
                         scroll_offset(
                             self.scoped_song_selected,
@@ -2410,9 +3163,17 @@ impl App {
             LibraryTab::Playlists => {
                 if let PlaylistScope::Open(pi) = &self.playlist_scope {
                     let indices = self.playlist_track_indices(*pi);
-                    self.playlist_song_selected = indices.iter().position(|&i| i == real_idx);
+                    let context_pos = self
+                        .play_context_position
+                        .filter(|&pos| indices.get(pos) == Some(&real_idx));
+                    self.playlist_song_selected = context_pos
+                        .or_else(|| indices.iter().position(|&i| i == real_idx));
                     self.playlist_songs_offset = if self.shuffle {
-                        center_offset(self.playlist_song_selected, self.list_height)
+                        center_offset(
+                            self.playlist_song_selected,
+                            self.scoped_list_height,
+                            indices.len(),
+                        )
                     } else {
                         scroll_offset(
                             self.playlist_song_selected,
@@ -2427,7 +3188,9 @@ impl App {
     }
 
     pub fn tick(&mut self) -> Result<()> {
+        #[cfg(feature = "tui")]
         self.finish_seek_if_idle()?;
+        #[cfg(feature = "tui")]
         self.drain_cover();
         self.drain_metadata();
         self.drain_artwork();
@@ -2440,6 +3203,7 @@ impl App {
                 self.lyrics_loading = false;
                 self.lyrics_error = result.is_none();
                 self.lyrics = result;
+                self.lyrics_revision = self.lyrics_revision.wrapping_add(1);
                 self.lyrics_rx = None;
             }
         }
@@ -2483,16 +3247,21 @@ impl App {
                     }
                 }
                 RepeatMode::Off => {
-                    // Stop at end of list
+                    // Stop at the end of the album/playlist instead of
+                    // restarting from the first track.
                     let indices = self.current_play_indices();
-                    if let Some(ci) = self.current_index {
-                        let pos = indices.iter().position(|&i| i == ci).unwrap_or(0);
-                        if pos + 1 < indices.len() {
-                            self.next_track()?;
-                        } else {
-                            self.next_track()?;
-                            self.player.pause();
-                        }
+                    let at_context_end = self
+                        .next_anchor_position(&indices)
+                        .is_some_and(|pos| pos + 1 >= indices.len());
+                    #[cfg(feature = "gui")]
+                    let pending = !self.queue.is_empty();
+                    #[cfg(not(feature = "gui"))]
+                    let pending = false;
+
+                    if at_context_end && !pending {
+                        self.player.pause();
+                    } else {
+                        self.next_track()?;
                     }
                 }
                 RepeatMode::All => {
@@ -2671,6 +3440,62 @@ impl App {
         }
     }
 
+    #[cfg(feature = "tui")]
+    pub fn scroll_list(&mut self, up: bool, grid_columns: usize) {
+        let is_grid = self.show_artwork
+            && self.grid_view
+            && matches!(
+                (&self.active_tab, &self.album_scope, &self.playlist_scope),
+                (LibraryTab::Albums, LibraryScope::All, _)
+                    | (LibraryTab::Artists, _, _)
+                    | (LibraryTab::Playlists, _, PlaylistScope::All)
+            );
+        let columns = if is_grid { grid_columns.max(1) } else { 1 };
+        let (offset, len, height) = match self.active_tab {
+            LibraryTab::Songs => (
+                &mut self.songs_offset,
+                self.all_track_indices.len(),
+                self.list_height,
+            ),
+            LibraryTab::Albums => match &self.album_scope {
+                LibraryScope::Album(_) => (
+                    &mut self.scoped_songs_offset,
+                    self.scoped_track_indices.len(),
+                    self.scoped_list_height,
+                ),
+                _ => (&mut self.albums_offset, self.albums.len(), self.list_height),
+            },
+            LibraryTab::Artists => match &self.artist_scope {
+                LibraryScope::Artist(_) => (
+                    &mut self.artist_albums_offset,
+                    self.scoped_albums.len(),
+                    self.list_height,
+                ),
+                _ => (
+                    &mut self.artists_offset,
+                    self.artists.len(),
+                    self.list_height,
+                ),
+            },
+            LibraryTab::Playlists => match &self.playlist_scope {
+                PlaylistScope::Open(index) => {
+                    let len = self.playlist_track_indices(*index).len();
+                    (
+                        &mut self.playlist_songs_offset,
+                        len,
+                        self.scoped_list_height,
+                    )
+                }
+                PlaylistScope::All => (
+                    &mut self.playlist_list_offset,
+                    self.playlists.len(),
+                    self.list_height,
+                ),
+            },
+        };
+        *offset = scroll_list_offset(*offset, len, height, up, columns);
+    }
+
     pub fn volume_up(&mut self) {
         self.player.volume_up();
     }
@@ -2681,6 +3506,7 @@ impl App {
 
     /// Load cover art in the background, keeping the current image visible
     /// until its replacement is ready.
+    #[cfg(feature = "tui")]
     fn refresh_cover(&mut self, index: usize) -> Result<()> {
         let path = match self.tracks.get(index) {
             Some(track) => track.path.clone(),
@@ -2690,24 +3516,27 @@ impl App {
         std::thread::spawn(move || {
             let mut track = Track::new(path);
             let bytes = enrich_track(&mut track).ok().flatten();
-            let image = bytes.and_then(|bytes| decode_cover(&bytes).ok()).map(|image| {
-                // Terminal covers never need the full camera-resolution image.
-                const MAX_COVER_DIMENSION: u32 = 1024;
-                if image.width() > MAX_COVER_DIMENSION || image.height() > MAX_COVER_DIMENSION {
-                    image.resize(
-                        MAX_COVER_DIMENSION,
-                        MAX_COVER_DIMENSION,
-                        image::imageops::FilterType::Triangle,
-                    )
-                } else {
-                    image
-                }
-            });
+            let image = bytes
+                .and_then(|bytes| decode_cover(&bytes).ok())
+                .map(|image| {
+                    // Terminal covers never need the full camera-resolution image.
+                    const MAX_COVER_DIMENSION: u32 = 1024;
+                    if image.width() > MAX_COVER_DIMENSION || image.height() > MAX_COVER_DIMENSION {
+                        image.resize(
+                            MAX_COVER_DIMENSION,
+                            MAX_COVER_DIMENSION,
+                            image::imageops::FilterType::Triangle,
+                        )
+                    } else {
+                        image
+                    }
+                });
             let _ = tx.send((index, image));
         });
         Ok(())
     }
 
+    #[cfg(feature = "tui")]
     fn drain_cover(&mut self) {
         while let Ok((index, image)) = self.cover_rx.try_recv() {
             if self.current_index != Some(index) {
@@ -2715,12 +3544,11 @@ impl App {
             }
 
             let image = image.or_else(|| self.fallback_cover.clone());
+            #[cfg(feature = "tui")]
             if let Some(ref image) = image {
                 if self.dynamic_theme {
-                    let colors = crate::ui::dynamic_theme::extract_colors(
-                        image,
-                        &self.dynamic_theme_style,
-                    );
+                    let colors =
+                        crate::ui::dynamic_theme::extract_colors(image, &self.dynamic_theme_style);
                     crate::ui::theme::set_dynamic_colors(colors);
                 }
             } else {
@@ -2754,6 +3582,7 @@ impl App {
         self.ensure_selection();
     }
 
+    #[cfg(feature = "tui")]
     pub fn is_double_mouse_click(&mut self, x: u16, y: u16) -> bool {
         let now = std::time::Instant::now();
         let is_double = self
@@ -2796,6 +3625,7 @@ impl App {
     }
 
     pub fn enter_album(&mut self, album: String) {
+        self.album_return_artist = None;
         self.album_scope = LibraryScope::Album(album);
         self.rebuild_album_cache();
         self.scoped_song_selected = if self.scoped_track_indices.is_empty() {
@@ -2806,7 +3636,35 @@ impl App {
         self.scoped_songs_offset = 0;
     }
 
+    pub fn enter_album_from_artist(&mut self, artist: String, album: String) {
+        let artist = self
+            .find_artist(&artist)
+            .unwrap_or_else(|| crate::library::artists::primary(&artist));
+        self.active_tab = LibraryTab::Albums;
+        self.enter_album(album);
+        self.album_return_artist = Some(artist);
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn album_return_artist(&self) -> Option<&str> {
+        self.album_return_artist.as_deref()
+    }
+
+    /// Find the canonical library entry for an artist credit, matching the
+    /// first credited name case-insensitively.
+    fn find_artist(&self, credit: &str) -> Option<String> {
+        let first = crate::library::artists::primary(credit);
+        let key = crate::library::artists::key(&first);
+        self.artists
+            .iter()
+            .find(|artist| crate::library::artists::key(artist) == key)
+            .cloned()
+    }
+
     pub fn enter_artist(&mut self, artist: String) {
+        let artist = self
+            .find_artist(&artist)
+            .unwrap_or_else(|| crate::library::artists::primary(&artist));
         self.artist_scope = LibraryScope::Artist(artist);
         self.rebuild_artist_cache();
         self.artist_scoped_album_selected = if self.scoped_albums.is_empty() {
@@ -2830,10 +3688,14 @@ impl App {
                 self.scoped_songs_offset = 0;
                 if let Some(artist) = return_artist {
                     self.active_tab = LibraryTab::Artists;
+                    let artist = self
+                        .find_artist(&artist)
+                        .unwrap_or_else(|| crate::library::artists::primary(&artist));
                     self.artist_scope = LibraryScope::Artist(artist);
                     self.rebuild_artist_cache();
-                    self.artist_scoped_album_selected = album_name
-                        .and_then(|album| self.scoped_albums.iter().position(|item| item == &album));
+                    self.artist_scoped_album_selected = album_name.and_then(|album| {
+                        self.scoped_albums.iter().position(|item| item == &album)
+                    });
                     self.artist_albums_offset = 0;
                 }
             }
@@ -2858,6 +3720,18 @@ impl App {
                 .map(|&i| self.tracks[i].path.clone()),
             _ => self.current_track().map(|t| t.path.clone()),
         };
+        self.toggle_favorite_path(track_path)
+    }
+
+    /// Toggle the favorite state of the currently playing song, ignoring the
+    /// list selection.
+    #[cfg(feature = "gui")]
+    pub fn toggle_current_favorite(&mut self) -> Result<()> {
+        let track_path = self.current_track().map(|track| track.path.clone());
+        self.toggle_favorite_path(track_path)
+    }
+
+    fn toggle_favorite_path(&mut self, track_path: Option<PathBuf>) -> Result<()> {
         let track_path = match track_path {
             Some(p) => p,
             _none => return Ok(()),
@@ -2909,6 +3783,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "tui")]
     pub fn update_seek(&mut self, forward: bool) {
         if let Some(track) = self.current_track() {
             self.player.update_seek(forward, Some(track.duration));
@@ -2919,6 +3794,7 @@ impl App {
         self.player.finish_seek()
     }
 
+    #[cfg(feature = "tui")]
     pub fn finish_seek_if_idle(&mut self) -> Result<()> {
         self.player
             .finish_seek_if_idle(std::time::Duration::from_millis(180))
@@ -2997,12 +3873,21 @@ impl App {
         self.search_offset = 0;
     }
 
+    #[cfg(feature = "tui")]
     pub fn search_type_char(&mut self, c: char) {
         self.search_query.push(c);
         self.run_search();
         self.search_offset = 0;
     }
 
+    #[cfg(feature = "gui")]
+    pub fn set_search_query(&mut self, query: String) {
+        self.search_query = query;
+        self.run_search();
+        self.search_offset = 0;
+    }
+
+    #[cfg(feature = "tui")]
     pub fn search_backspace(&mut self) {
         self.search_query.pop();
         self.run_search();
@@ -3047,9 +3932,7 @@ impl App {
                     continue;
                 };
                 let terms = &self.search_terms[ti];
-                if (terms.title.contains(&q) || terms.artist.contains(&q))
-                    && listed.insert(ti)
-                {
+                if (terms.title.contains(&q) || terms.artist.contains(&q)) && listed.insert(ti) {
                     self.search_results.push(SearchResult::PlaylistTrack {
                         playlist_idx: pi,
                         track_idx: ti,
@@ -3118,6 +4001,8 @@ impl App {
                 self.songs_offset =
                     scroll_offset(self.selected_index, self.songs_offset, self.list_height);
                 self.play_index(ti)?;
+                self.play_context_position =
+                    self.current_play_indices().iter().position(|&i| i == ti);
             }
             Some(SearchResult::Album(album)) => {
                 self.exit_search();
@@ -3139,6 +4024,10 @@ impl App {
                 }
                 self.exit_search();
                 self.play_index(track_idx)?;
+                self.play_context_position = self
+                    .current_play_indices()
+                    .iter()
+                    .position(|&i| i == track_idx);
             }
             _none => {}
         }
@@ -3173,13 +4062,12 @@ impl App {
             PlayContext::AllTracks => {
                 self.active_tab = LibraryTab::Songs;
                 self.selected_index = self.all_track_indices.iter().position(|&i| i == ci);
-                self.songs_offset =
-                    get_new_offset(
-                        self.songs_offset,
-                        self.selected_index.unwrap_or(0),
-                        self.list_height,
-                        self.all_track_indices.len(),
-                    );
+                self.songs_offset = get_new_offset(
+                    self.songs_offset,
+                    self.selected_index.unwrap_or(0),
+                    self.list_height,
+                    self.all_track_indices.len(),
+                );
             }
             PlayContext::Album => {
                 self.active_tab = LibraryTab::Albums;
@@ -3214,7 +4102,11 @@ impl App {
                 self.playlist_selected = Some(pi);
 
                 let indices = self.playlist_track_indices(pi);
-                if let Some(pos) = indices.iter().position(|&i| i == ci) {
+                let pos = self
+                    .play_context_position
+                    .filter(|&pos| indices.get(pos) == Some(&ci))
+                    .or_else(|| indices.iter().position(|&i| i == ci));
+                if let Some(pos) = pos {
                     self.playlist_song_selected = Some(pos);
                     self.playlist_songs_offset = get_new_offset(
                         self.playlist_songs_offset,
@@ -3227,6 +4119,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "tui")]
     pub fn edit_lyrics(&mut self) -> Result<()> {
         let track = match self.current_track() {
             Some(t) => t,
@@ -3234,12 +4127,14 @@ impl App {
         };
 
         let lrc_path = crate::lyrics::manual_lyrics_path(&track.path);
+        let track_path = track.path.clone();
 
         // If no manual file exists yet, create a template
         if !lrc_path.exists() {
             let template = build_lrc_template(track);
             std::fs::write(&lrc_path, template)?;
         }
+        let lyrics_before = std::fs::read_to_string(&lrc_path).ok();
 
         // Suspend TUI. Mouse capture must be released too, otherwise mouse
         // movement is sent to the editor as escape sequences.
@@ -3262,9 +4157,7 @@ impl App {
                 }
                 "nano".to_string()
             });
-        let editor_result = std::process::Command::new(&editor)
-            .arg(&lrc_path)
-            .status();
+        let editor_result = std::process::Command::new(&editor).arg(&lrc_path).status();
 
         // Restore the TUI even if the editor could not be started.
         crossterm::terminal::enable_raw_mode()?;
@@ -3276,6 +4169,9 @@ impl App {
         )?;
         self.needs_full_redraw = true;
         // Reload lyrics from the edited file
+        if std::fs::read_to_string(&lrc_path).ok() != lyrics_before {
+            let _ = crate::lyrics::unflag_lyrics(&track_path);
+        }
         if let Some(idx) = self.current_index {
             self.fetch_lyrics(idx);
         }
@@ -3283,6 +4179,49 @@ impl App {
             self.show_notice(format!("Could not open editor: {error}"));
         }
 
+        Ok(())
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn reload_lyrics(&mut self) {
+        if let Some(index) = self.current_index {
+            self.fetch_lyrics(index);
+        }
+    }
+
+    /// Flag the current song's lyrics as wrong and hide them. The flag is
+    /// stored in the lyrics cache, so the lyrics stay hidden across restarts.
+    #[cfg(feature = "gui")]
+    pub fn flag_current_lyrics(&mut self) -> Result<()> {
+        let Some(path) = self.current_track().map(|track| track.path.clone()) else {
+            self.show_notice("Select a song to flag its lyrics");
+            return Ok(());
+        };
+        crate::lyrics::flag_lyrics(&path)?;
+        self.lyrics = None;
+        self.lyrics_revision = self.lyrics_revision.wrapping_add(1);
+        self.lyrics_loading = false;
+        self.lyrics_error = false;
+        self.lyrics_flagged = true;
+        self.lyrics_rx = None;
+        self.lyrics_scroll = None;
+        self.lyrics_clicked_line = None;
+        self.show_notice("Lyrics hidden; flagged as wrong");
+        Ok(())
+    }
+
+    /// Clear the wrong-lyrics flag and look the lyrics up again.
+    #[cfg(feature = "gui")]
+    pub fn unflag_current_lyrics(&mut self) -> Result<()> {
+        let Some(index) = self.current_index else {
+            self.show_notice("Select a song to restore its lyrics");
+            return Ok(());
+        };
+        let path = self.tracks[index].path.clone();
+        crate::lyrics::unflag_lyrics(&path)?;
+        self.lyrics_flagged = false;
+        self.fetch_lyrics(index);
+        self.show_notice("Lyrics flag cleared");
         Ok(())
     }
 
@@ -3388,6 +4327,14 @@ impl App {
         if saved == 0 {
             self.show_notice("Sync cancelled; no timestamps recorded");
             return Ok(());
+        }
+
+        // Saved lyrics replace the old ones, so any wrong-lyrics flag no
+        // longer applies.
+        if let Some(index) = track_index {
+            if let Some(track) = self.tracks.get(index) {
+                let _ = crate::lyrics::unflag_lyrics(&track.path);
+            }
         }
 
         if completed && saved == total {
@@ -3581,7 +4528,40 @@ pub fn scroll_offset(
     }
 }
 
-fn sort_track_indices(indices: &mut [usize], tracks: &[Track], mode: SongSort) {
+const HISTORY_LIMIT: usize = 100;
+
+/// Resolve the playing slot inside a context. The remembered position wins
+/// when it still points at the playing track, which keeps duplicate entries
+/// (same song twice in History) distinct. Otherwise fall back to the first
+/// matching index.
+fn resolve_context_position(
+    current: Option<usize>,
+    remembered: Option<usize>,
+    indices: &[usize],
+) -> Option<usize> {
+    if let Some(pos) = remembered {
+        if current.is_some_and(|current| indices.get(pos) == Some(&current)) {
+            return Some(pos);
+        }
+    }
+    current.and_then(|current| indices.iter().position(|&i| i == current))
+}
+
+/// Merge deferred History plays, then add the newest play. Both lists are
+/// newest-first, and duplicates are preserved on purpose so the History
+/// playlist reflects the actual listening order.
+fn commit_history_play(history: &mut Vec<PathBuf>, pending: &mut Vec<PathBuf>, path: &Path) {
+    history.splice(0..0, pending.drain(..));
+    history.insert(0, path.to_path_buf());
+    history.truncate(HISTORY_LIMIT);
+}
+
+fn sort_track_indices(
+    indices: &mut [usize],
+    tracks: &[Track],
+    mode: SongSort,
+    descending: bool,
+) {
     match mode {
         SongSort::LastAdded => indices.sort_by(|&a, &b| b.cmp(&a)),
         SongSort::FirstAdded => indices.sort_by(|&a, &b| a.cmp(&b)),
@@ -3620,11 +4600,61 @@ fn sort_track_indices(indices: &mut [usize], tracks: &[Track], mode: SongSort) {
             }
         }
     }
+    // Natural order for the field is ascending, except "last added" which is
+    // already newest-first. The descending flag flips whichever is shown.
+    if descending && !matches!(mode, SongSort::LastAdded) {
+        indices.reverse();
+    }
+}
+
+fn sort_playlist_track_indices(
+    indices: &mut [usize],
+    tracks: &[Track],
+    mode: SongSort,
+    descending: bool,
+) {
+    match mode {
+        SongSort::LastAdded => indices.reverse(),
+        SongSort::FirstAdded => {}
+        _ => sort_track_indices(indices, tracks, mode, descending),
+    }
+}
+
+#[cfg(any(feature = "tui", test))]
+fn scroll_list_offset(
+    offset: usize,
+    len: usize,
+    visible_items: usize,
+    up: bool,
+    columns: usize,
+) -> usize {
+    if len == 0 || visible_items == 0 {
+        return 0;
+    }
+
+    let columns = columns.max(1);
+    let last_start = if columns == 1 {
+        len.saturating_sub(visible_items)
+    } else {
+        let min_start = len.saturating_sub(visible_items);
+        let aligned_start = min_start.saturating_add(columns - 1) / columns * columns;
+        aligned_start.min((len - 1) / columns * columns)
+    };
+    let current = offset / columns * columns;
+
+    if up {
+        current.saturating_sub(columns)
+    } else {
+        current.saturating_add(columns).min(last_start)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{sort_track_indices, SongSort};
+    use super::{
+        center_offset, commit_history_play, resolve_context_position, scroll_list_offset,
+        sort_playlist_track_indices, sort_track_indices, SongSort,
+    };
     use crate::library::track::Track;
     use std::path::PathBuf;
 
@@ -3635,7 +4665,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut indices = vec![0, 1, 2];
 
-        sort_track_indices(&mut indices, &tracks, SongSort::LastAdded);
+        sort_track_indices(&mut indices, &tracks, SongSort::LastAdded, false);
 
         assert_eq!(indices, vec![2, 1, 0]);
     }
@@ -3647,9 +4677,88 @@ mod tests {
             .collect::<Vec<_>>();
         let mut indices = vec![2, 1, 0];
 
-        sort_track_indices(&mut indices, &tracks, SongSort::FirstAdded);
+        sort_track_indices(&mut indices, &tracks, SongSort::FirstAdded, false);
 
         assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn playlist_added_sort_uses_playlist_order() {
+        let tracks = (0..4)
+            .map(|index| Track::new(PathBuf::from(format!("track-{index}.mp3"))))
+            .collect::<Vec<_>>();
+        let original_playlist_order = vec![2, 0, 3];
+        let mut last_added = original_playlist_order.clone();
+        let mut first_added = original_playlist_order.clone();
+
+        sort_playlist_track_indices(&mut last_added, &tracks, SongSort::LastAdded, false);
+        sort_playlist_track_indices(&mut first_added, &tracks, SongSort::FirstAdded, false);
+
+        assert_eq!(last_added, vec![3, 0, 2]);
+        assert_eq!(first_added, original_playlist_order);
+    }
+
+    #[test]
+    fn mouse_list_scroll_moves_offsets_without_creating_blank_rows() {
+        assert_eq!(scroll_list_offset(0, 20, 5, false, 1), 1);
+        assert_eq!(scroll_list_offset(15, 20, 5, false, 1), 15);
+        assert_eq!(scroll_list_offset(8, 20, 5, true, 1), 7);
+        assert_eq!(scroll_list_offset(0, 3, 5, false, 1), 0);
+        assert_eq!(scroll_list_offset(0, 20, 8, false, 4), 4);
+    }
+
+    #[test]
+    fn centered_shuffle_offset_clamps_at_list_end() {
+        assert_eq!(center_offset(Some(50), 10, 100), 45);
+        assert_eq!(center_offset(Some(99), 10, 100), 90);
+        assert_eq!(center_offset(Some(2), 10, 100), 0);
+        assert_eq!(center_offset(Some(2), 10, 3), 0);
+    }
+
+    #[test]
+    fn history_keeps_duplicates_and_flushes_deferred_plays() {
+        let a = PathBuf::from("/music/a.mp3");
+        let b = PathBuf::from("/music/b.mp3");
+        let c = PathBuf::from("/music/c.mp3");
+        let d = PathBuf::from("/music/d.mp3");
+
+        // Playing a, then b, then a records each play, duplicates included.
+        let mut history = Vec::new();
+        let mut pending = Vec::new();
+        for path in [&a, &b, &a] {
+            commit_history_play(&mut history, &mut pending, path);
+        }
+        assert_eq!(history, vec![a.clone(), b.clone(), a.clone()]);
+
+        // Plays deferred while listening to History are merged before the
+        // next play from somewhere else.
+        let mut history = vec![a.clone(), b.clone(), c.clone()];
+        let mut pending = vec![b.clone(), a.clone()];
+        commit_history_play(&mut history, &mut pending, &d);
+        assert_eq!(
+            history,
+            vec![d, b.clone(), a.clone(), a, b, c],
+            "deferred plays keep their order and duplicates"
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn duplicate_history_entries_keep_their_own_position() {
+        // History rows: A, B, A, C. A is both real index 0 (rows 0 and 2)
+        // and C is real index 2.
+        let indices = [0, 1, 0, 2];
+
+        // Playing the second A must resolve to row 2 so Next reaches C
+        // instead of looping back to B through the first A.
+        assert_eq!(resolve_context_position(Some(0), Some(2), &indices), Some(2));
+        assert_eq!(indices[2 + 1], 2, "next row after the second A is C");
+
+        // Without a remembered slot the first match is used.
+        assert_eq!(resolve_context_position(Some(0), None, &indices), Some(0));
+
+        // A stale remembered slot falls back to the first match.
+        assert_eq!(resolve_context_position(Some(2), Some(1), &indices), Some(3));
     }
 
     #[test]
@@ -3662,12 +4771,28 @@ mod tests {
         tracks[2].title = "gamma".into();
         let mut indices = vec![0, 1, 2];
 
-        sort_track_indices(&mut indices, &tracks, SongSort::Title);
+        sort_track_indices(&mut indices, &tracks, SongSort::Title, false);
 
         assert_eq!(indices, vec![1, 0, 2]);
     }
+
+    #[test]
+    fn descending_sort_reverses_the_field_order() {
+        let mut tracks = (0..3)
+            .map(|index| Track::new(PathBuf::from(format!("track-{index}.mp3"))))
+            .collect::<Vec<_>>();
+        tracks[0].title = "beta".into();
+        tracks[1].title = "Alpha".into();
+        tracks[2].title = "gamma".into();
+        let mut indices = vec![0, 1, 2];
+
+        sort_track_indices(&mut indices, &tracks, SongSort::Title, true);
+
+        assert_eq!(indices, vec![2, 0, 1]);
+    }
 }
 
+#[cfg(feature = "tui")]
 fn char_index_to_byte(value: &str, char_index: usize) -> usize {
     value
         .char_indices()
@@ -3685,16 +4810,13 @@ fn trimmed_or(value: &str, fallback: &str) -> String {
     }
 }
 
-pub fn center_offset(selected: Option<usize>, visible_height: usize) -> usize {
+pub fn center_offset(selected: Option<usize>, visible_height: usize, total_items: usize) -> usize {
     let sel = match selected {
         Some(s) => s,
         _none => return 0,
     };
-    if sel < visible_height / 2 {
-        0
-    } else {
-        sel - visible_height / 2
-    }
+    let centered = sel.saturating_sub(visible_height / 2);
+    centered.min(total_items.saturating_sub(visible_height))
 }
 
 fn rand_usize(state: &mut u64) -> usize {
@@ -3730,6 +4852,7 @@ fn cycle_prev(idx: &mut Option<usize>, len: usize) {
     });
 }
 
+#[cfg(feature = "tui")]
 fn build_lrc_template(track: &crate::library::track::Track) -> String {
     format!(
         "[ti:{}]\n[ar:{}]\n[al:{}]\n[by:aghani]\n\n\
@@ -3746,6 +4869,7 @@ fn build_lrc_template(track: &crate::library::track::Track) -> String {
     )
 }
 
+#[cfg(feature = "tui")]
 fn which(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)

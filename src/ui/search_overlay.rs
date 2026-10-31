@@ -78,7 +78,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let results = &app.search_results;
         let start = crate::ui::library_panel::visible_start(
             results.len(),
-            app.search_selected,
             app.search_offset,
             chunks[2].height,
         );

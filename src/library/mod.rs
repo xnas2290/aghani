@@ -1,4 +1,5 @@
 pub mod artwork;
+pub mod artists;
 pub mod cache;
 pub mod playlist;
 pub mod scanner;

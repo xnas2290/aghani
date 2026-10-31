@@ -1,4 +1,3 @@
-
 use anyhow::{Context, Result};
 use libpulse_binding as pulse;
 use pulse::context::Context as PulseContext;
@@ -33,55 +32,64 @@ struct PulseHandle {
 impl PulseHandle {
     fn new() -> Option<Self> {
         let mut mainloop = Mainloop::new()?;
+        let context = PulseContext::new(&mainloop, "aghani")?;
         mainloop.start().ok()?;
 
-        let mut context = PulseContext::new(&mainloop, "aghani")?;
-        context
-            .connect(None, pulse::context::FlagSet::NOFLAGS, None)
-            .ok()?;
+        let mut pulse = Self { mainloop, context };
+        pulse.mainloop.lock();
+        let connect_result = pulse
+            .context
+            .connect(None, pulse::context::FlagSet::NOFLAGS, None);
+        pulse.mainloop.unlock();
+        connect_result.ok()?;
 
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            match context.get_state() {
-                pulse::context::State::Ready => break,
-                pulse::context::State::Failed
-                | pulse::context::State::Terminated => return None,
+            pulse.mainloop.lock();
+            let state = pulse.context.get_state();
+            pulse.mainloop.unlock();
+            match state {
+                pulse::context::State::Ready => return Some(pulse),
+                pulse::context::State::Failed | pulse::context::State::Terminated => return None,
+                _ if Instant::now() >= deadline => return None,
                 _ => thread::sleep(Duration::from_millis(10)),
             }
         }
-
-        Some(Self { mainloop, context })
     }
 
     fn find_ffmpeg_sink_input(&mut self) -> Option<u32> {
         let result = Arc::new(Mutex::new(None::<u32>));
         let result_clone = Arc::clone(&result);
-        let introspector = self.context.introspect();
-
         self.mainloop.lock();
-
+        let introspector = self.context.introspect();
         let op = introspector.get_sink_input_info_list(move |item| {
             if let pulse::callbacks::ListResult::Item(info) = item {
-                if let Some(binary) =
-                    info.proplist.get_str("application.process.binary")
-                {
+                if let Some(binary) = info.proplist.get_str("application.process.binary") {
                     if binary == "ffmpeg" {
                         *result_clone.lock().unwrap() = Some(info.index);
                     }
                 }
             }
         });
-
+        drop(introspector);
         self.mainloop.unlock();
 
         loop {
             self.mainloop.lock();
             let state = op.get_state();
-            self.mainloop.unlock();
-
             match state {
-                pulse::operation::State::Done => break,
-                pulse::operation::State::Cancelled => return None,
+                pulse::operation::State::Done => {
+                    drop(op);
+                    self.mainloop.unlock();
+                    break;
+                }
+                pulse::operation::State::Cancelled => {
+                    drop(op);
+                    self.mainloop.unlock();
+                    return None;
+                }
                 pulse::operation::State::Running => {
+                    self.mainloop.unlock();
                     thread::sleep(Duration::from_millis(5));
                 }
             }
@@ -94,28 +102,28 @@ impl PulseHandle {
     fn set_volume(&mut self, index: u32, vol: f32) {
         let linear = (vol * Volume::NORMAL.0 as f32) as u32;
         let mut binding = ChannelVolumes::default();
-        let channels = binding.set(
-            2,
-            Volume(linear.min(Volume::MAX.0)),
-        );
-
-        let mut introspector = self.context.introspect();
+        let channels = binding.set(2, Volume(linear.min(Volume::MAX.0)));
         self.mainloop.lock();
+        let mut introspector = self.context.introspect();
         introspector.set_sink_input_volume(index, channels, None);
+        drop(introspector);
         self.mainloop.unlock();
     }
 
     fn set_mute(&mut self, index: u32, mute: bool) {
-        let mut introspector = self.context.introspect();
         self.mainloop.lock();
+        let mut introspector = self.context.introspect();
         introspector.set_sink_input_mute(index, mute, None);
+        drop(introspector);
         self.mainloop.unlock();
     }
 }
 
 impl Drop for PulseHandle {
     fn drop(&mut self) {
+        self.mainloop.lock();
         self.context.disconnect();
+        self.mainloop.unlock();
         self.mainloop.stop();
     }
 }
@@ -154,11 +162,7 @@ impl Player {
         self.play_from(path, Duration::ZERO, None)
     }
 
-    pub fn play_with_gain(
-        &mut self,
-        path: &Path,
-        gain_db: Option<f32>,
-    ) -> Result<()> {
+    pub fn play_with_gain(&mut self, path: &Path, gain_db: Option<f32>) -> Result<()> {
         self.seeking = false;
         self.seek_last_update = None;
         self.seek_started_at = None;
@@ -176,6 +180,7 @@ impl Player {
     }
 
     // Call on every press/repeat event while an arrow key is held.
+    #[cfg(feature = "tui")]
     pub fn update_seek(&mut self, forward: bool, max: Option<Duration>) {
         let now = Instant::now();
         let first_update = !self.seeking;
@@ -218,10 +223,7 @@ impl Player {
         }
 
         let target = self.seek_target;
-        let path = self
-            .current_path
-            .clone()
-            .context("No track selected")?;
+        let path = self.current_path.clone().context("No track selected")?;
         let gain = self.current_gain;
         let was_paused = self.paused;
 
@@ -238,6 +240,7 @@ impl Player {
         Ok(())
     }
 
+    #[cfg(feature = "tui")]
     pub fn finish_seek_if_idle(&mut self, idle_for: Duration) -> Result<()> {
         if self.seeking
             && self
@@ -250,12 +253,7 @@ impl Player {
         Ok(())
     }
 
-    fn play_from(
-        &mut self,
-        path: &Path,
-        offset: Duration,
-        gain_db: Option<f32>,
-    ) -> Result<()> {
+    fn play_from(&mut self, path: &Path, offset: Duration, gain_db: Option<f32>) -> Result<()> {
         self.kill_child();
 
         self.current_path = Some(path.to_path_buf());
@@ -353,7 +351,7 @@ impl Player {
     }
 
     pub fn resume(&mut self) {
-        if self.paused==false {
+        if self.paused == false {
             return;
         }
 

@@ -44,7 +44,7 @@ impl Default for MprisUpdate {
 }
 
 pub fn start_mpris() -> (mpsc::Receiver<MprisCommand>, mpsc::SyncSender<MprisUpdate>) {
-    let (cmd_tx, cmd_rx) = mpsc::sync_channel::<MprisCommand>(32);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<MprisCommand>();
     let (update_tx, update_rx) = mpsc::sync_channel::<MprisUpdate>(32);
 
     std::thread::spawn(move || {
@@ -65,39 +65,39 @@ pub fn start_mpris() -> (mpsc::Receiver<MprisCommand>, mpsc::SyncSender<MprisUpd
 
             let tx = cmd_tx.clone();
             player.connect_play_pause(move |_| {
-                let _ = tx.try_send(MprisCommand::PlayPause);
+                let _ = tx.send(MprisCommand::PlayPause);
             });
             let tx = cmd_tx.clone();
             player.connect_play(move |_| {
-                let _ = tx.try_send(MprisCommand::Play);
+                let _ = tx.send(MprisCommand::Play);
             });
             let tx = cmd_tx.clone();
             player.connect_pause(move |_| {
-                let _ = tx.try_send(MprisCommand::Pause);
+                let _ = tx.send(MprisCommand::Pause);
             });
             let tx = cmd_tx.clone();
             player.connect_next(move |_| {
-                let _ = tx.try_send(MprisCommand::Next);
+                let _ = tx.send(MprisCommand::Next);
             });
             let tx = cmd_tx.clone();
             player.connect_previous(move |_| {
-                let _ = tx.try_send(MprisCommand::Prev);
+                let _ = tx.send(MprisCommand::Prev);
             });
             let tx = cmd_tx.clone();
             player.connect_stop(move |_| {
-                let _ = tx.try_send(MprisCommand::Stop);
+                let _ = tx.send(MprisCommand::Stop);
             });
             let tx = cmd_tx.clone();
             player.connect_seek(move |_, offset| {
-                let _ = tx.try_send(MprisCommand::Seek(offset.as_micros() as i64));
+                let _ = tx.send(MprisCommand::Seek(offset.as_micros() as i64));
             });
             let tx = cmd_tx.clone();
             player.connect_set_volume(move |_, vol| {
-                let _ = tx.try_send(MprisCommand::SetVolume(vol));
+                let _ = tx.send(MprisCommand::SetVolume(vol));
             });
             let tx = cmd_tx.clone();
             player.connect_set_position(move |_, _, position| {
-                let _ = tx.try_send(MprisCommand::SetPosition(position.as_micros() as i64));
+                let _ = tx.send(MprisCommand::SetPosition(position.as_micros() as i64));
             });
             ex.spawn(player.run()).detach();
 

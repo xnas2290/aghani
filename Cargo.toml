@@ -11,6 +11,11 @@ keywords = ["music", "player", "tui", "terminal", "mpris"]
 categories = ["multimedia::audio", "command-line-utilities"]
 readme = "README.md"
 
+[features]
+default = ["tui"]
+tui = []
+gui = ["dep:eframe", "dep:arabic_reshaper"]
+
 [dependencies]
 unicode-bidi = "0.3"
 anyhow = "1.0.102"
@@ -45,3 +50,6 @@ smol = "2"
 color-thief = "0.2"
 ureq = { version = "2.9", features = ["json"] }
 libpulse-binding = "2"
+eframe = { version = "0.31.1", optional = true }
+arabic_reshaper = { version = "0.4.2", optional = true }
+egui-phosphor = { version = "0.9" }

@@ -174,7 +174,6 @@ fn draw_playlist_songs(f: &mut Frame, app: &App, pi: usize, area: Rect) {
     let list_area = chunks[1];
     let start = crate::ui::library_panel::visible_start(
         indices.len(),
-        app.playlist_song_selected,
         app.playlist_songs_offset,
         list_area.height,
     );

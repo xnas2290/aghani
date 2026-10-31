@@ -21,7 +21,11 @@ pub struct Thumbnail {
 impl Thumbnail {
     pub fn from_image(image: DynamicImage) -> Self {
         let image = if image.width() > DISPLAY_MAX || image.height() > DISPLAY_MAX {
-            image.resize(DISPLAY_MAX, DISPLAY_MAX, image::imageops::FilterType::Triangle)
+            image.resize(
+                DISPLAY_MAX,
+                DISPLAY_MAX,
+                image::imageops::FilterType::Triangle,
+            )
         } else {
             image
         };
@@ -36,6 +40,7 @@ impl Thumbnail {
 
 /// A real raster placeholder used when an artist or album has no artwork.
 /// It is intentionally large enough for image protocols to scale cleanly.
+#[cfg(feature = "tui")]
 pub fn placeholder() -> Thumbnail {
     let image = image::RgbImage::from_fn(256, 256, |x, y| {
         let dx = x as i32 - 128;
@@ -98,6 +103,12 @@ pub fn from_path(key: &str, path: &Path) -> Option<Thumbnail> {
     let _ = save_thumbnail(&thumb, &file_for(key));
     let _ = std::fs::remove_file(source_file_for(key));
     Some(thumb)
+}
+
+/// Path of the cached thumbnail for a key. URL-based artwork is stored in this
+/// file so the override survives restarts without re-downloading the image.
+pub fn thumbnail_path(key: &str) -> PathBuf {
+    file_for(key)
 }
 
 pub fn load(key: &str) -> Option<Thumbnail> {

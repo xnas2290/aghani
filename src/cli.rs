@@ -96,8 +96,8 @@ KEYBINDS:
     x              Go back (exit scope)
     i              Toggle library list artwork
     G              Toggle image grid/list view
-    Shift+I        Set custom artwork for selected album/artist/playlist
-    e              Edit metadata and album art of the selected song
+    Shift+I        Set custom artwork from an image URL or file
+    e              Edit metadata, or the selected album/artist/playlist image
     Shift+F        Show the selected song in the file manager
     p              Pin selected playlist (playlist list)
     q              Quit
@@ -171,7 +171,7 @@ fn dir_size(path: &std::path::Path) -> u64 {
         .sum()
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
     } else if bytes < 1024 * 1024 {
@@ -181,6 +181,37 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Where Aghani keeps its cache and how much space each part uses, for the
+/// GUI settings page.
+#[derive(Clone)]
+pub struct CacheInfo {
+    pub dir: PathBuf,
+    pub total: u64,
+    pub music_data: u64,
+    pub auto_lyrics: u64,
+    pub manual_lyrics: u64,
+}
+
+pub fn cache_info() -> CacheInfo {
+    use crate::lyrics::{auto_lyrics_cache_dir, manual_lyrics_cache_dir};
+
+    let dir = dirs_next::cache_dir().unwrap_or_default().join("aghani");
+    CacheInfo {
+        total: dir_size(&dir),
+        music_data: dir_size(&dir.join("metadata.json")),
+        auto_lyrics: dir_size(&auto_lyrics_cache_dir()),
+        manual_lyrics: dir_size(&manual_lyrics_cache_dir()),
+        dir,
+    }
+}
+
+/// Clear everything that is rebuilt automatically: the music metadata cache
+/// and auto-fetched lyrics. Lyrics written or synced by hand are kept.
+pub fn clear_regenerable_caches() {
+    clear_caches(ClearTarget::MusicData);
+    clear_caches(ClearTarget::AutoLyrics);
+}
+
 pub fn clear_caches(which: ClearTarget) {
     use crate::lyrics::{auto_lyrics_cache_dir, cache_dir};
 
@@ -188,6 +219,7 @@ pub fn clear_caches(which: ClearTarget) {
         ClearTarget::All => {
             clear_dir(&auto_lyrics_cache_dir(), "auto lyrics");
             clear_dir(&cache_dir().join("manual"), "manual lyrics");
+            clear_dir(&cache_dir().join("flagged"), "flagged lyrics");
             // Music data cache is in music dir — warn user
             println!("Note: music metadata cache (.aghani-cache.json) is in your music directory.");
             println!("Run --clear-music-data-cache to remove it.");

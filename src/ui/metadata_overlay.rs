@@ -48,8 +48,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if let Some(error) = &app.metadata_edit_error {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(format!("  {error}"), Theme::accent())))
-                .alignment(Alignment::Left),
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {error}"),
+                Theme::accent(),
+            )))
+            .alignment(Alignment::Left),
             rows[5],
         );
     }
@@ -109,7 +112,10 @@ fn draw_field(f: &mut Frame, app: &App, area: Rect, field: usize) {
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!("  {:<width$}", FIELD_LABELS[field], width = 8), label_style),
+            Span::styled(
+                format!("  {:<width$}", FIELD_LABELS[field], width = 8),
+                label_style,
+            ),
             Span::styled(rendered, value_style),
             Span::styled(padding, value_style),
         ])),

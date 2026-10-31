@@ -58,6 +58,32 @@ impl Lyrics {
             i => Some(i - 1),
         }
     }
+
+    /// Time left until the next timed line starts. Used to schedule a repaint
+    /// exactly when the highlighted lyric changes instead of polling.
+    #[cfg(any(feature = "gui", test))]
+    pub fn next_line_in(&self, elapsed: Duration) -> Option<Duration> {
+        let next = self.lines.partition_point(|line| line.time <= elapsed);
+        self.lines
+            .get(next)
+            .map(|line| line.time.saturating_sub(elapsed))
+    }
+
+    pub fn adjacent_line_time(&self, elapsed: Duration, forward: bool) -> Option<Duration> {
+        if !self.synced {
+            return None;
+        }
+
+        let current = self.current_line(elapsed)?;
+        let adjacent = if forward {
+            current
+                .checked_add(1)
+                .filter(|&index| index < self.lines.len())?
+        } else {
+            current.checked_sub(1)?
+        };
+        Some(self.lines[adjacent].time)
+    }
 }
 // ── Cache directories ─────────────────────────────────────────────────────────
 
@@ -78,6 +104,42 @@ pub fn manual_lyrics_cache_dir() -> PathBuf {
     let dir = cache_dir().join("manual");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+pub fn flagged_lyrics_cache_dir() -> PathBuf {
+    let dir = cache_dir().join("flagged");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Marker file recording that the lyrics for a track were flagged as wrong.
+pub fn flagged_lyrics_path(track_path: &std::path::Path) -> PathBuf {
+    let filename = format!("{}.flag", sanitize_path(track_path));
+    flagged_lyrics_cache_dir().join(filename)
+}
+
+/// True when the user flagged this track's lyrics as wrong. Flagged lyrics are
+/// hidden and are not looked up again until the flag is cleared.
+pub fn has_flagged(track_path: &std::path::Path) -> bool {
+    flagged_lyrics_path(track_path).exists()
+}
+
+#[cfg(any(feature = "gui", test))]
+pub fn flag_lyrics(track_path: &std::path::Path) -> Result<()> {
+    let path = flagged_lyrics_path(track_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, "flagged\n")?;
+    Ok(())
+}
+
+pub fn unflag_lyrics(track_path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(flagged_lyrics_path(track_path)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 // ── Manual lyrics path — stored in cache, NOT next to audio file ──────────────
@@ -197,6 +259,11 @@ pub fn fetch_lyrics(
     duration: f64,
     track_path: &std::path::Path,
 ) -> Option<Lyrics> {
+    // Wrong lyrics are hidden until the user clears the flag, even if a
+    // cached or manual copy exists.
+    if has_flagged(track_path) {
+        return None;
+    }
     if let Some(lyrics) = load_manual(track_path) {
         return Some(lyrics);
     }
@@ -350,10 +417,114 @@ fn sanitize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_timestamp, parse_lrc, render_synced, SyncLine};
+    use super::{
+        fetch_lyrics, flag_lyrics, format_timestamp, has_flagged, manual_lyrics_path, parse_lrc,
+        render_synced, unflag_lyrics, LrcLine, Lyrics, SyncLine,
+    };
     use crate::library::track::Track;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[test]
+    fn adjacent_synced_lyric_time_steps_between_verses() {
+        let lyrics = Lyrics {
+            lines: vec![
+                LrcLine {
+                    time: Duration::from_secs(2),
+                    text: "First".into(),
+                },
+                LrcLine {
+                    time: Duration::from_secs(5),
+                    text: "Second".into(),
+                },
+                LrcLine {
+                    time: Duration::from_secs(8),
+                    text: "Third".into(),
+                },
+            ],
+            synced: true,
+        };
+
+        assert_eq!(
+            lyrics.adjacent_line_time(Duration::from_secs(6), true),
+            Some(Duration::from_secs(8))
+        );
+        assert_eq!(
+            lyrics.adjacent_line_time(Duration::from_secs(6), false),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(lyrics.adjacent_line_time(Duration::ZERO, false), None);
+        assert_eq!(
+            lyrics.adjacent_line_time(Duration::from_secs(9), true),
+            None
+        );
+    }
+
+    #[test]
+    fn next_synced_lyric_line_reports_time_until_boundary() {
+        let lyrics = Lyrics {
+            lines: vec![
+                LrcLine {
+                    time: Duration::from_secs(2),
+                    text: "First".into(),
+                },
+                LrcLine {
+                    time: Duration::from_secs(5),
+                    text: "Second".into(),
+                },
+            ],
+            synced: true,
+        };
+
+        assert_eq!(
+            lyrics.next_line_in(Duration::from_secs(1)),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            lyrics.next_line_in(Duration::from_secs(3)),
+            Some(Duration::from_secs(2))
+        );
+        // At or after the last timestamp there is no next line to wait for.
+        assert_eq!(lyrics.next_line_in(Duration::from_secs(5)), None);
+        assert_eq!(lyrics.next_line_in(Duration::from_secs(9)), None);
+    }
+
+    #[test]
+    fn adjacent_lyric_time_is_disabled_for_plain_lyrics() {
+        let lyrics = Lyrics {
+            lines: vec![LrcLine {
+                time: Duration::ZERO,
+                text: "Plain".into(),
+            }],
+            synced: false,
+        };
+
+        assert_eq!(lyrics.adjacent_line_time(Duration::ZERO, true), None);
+    }
+
+    #[test]
+    fn flagged_lyrics_are_hidden_until_unflagged() {
+        let track_path =
+            PathBuf::from(format!("/tmp/aghani-lyrics-flag-{}.mp3", std::process::id()));
+        let _ = unflag_lyrics(&track_path);
+
+        // Seed manual lyrics so fetching would otherwise succeed offline.
+        let manual = manual_lyrics_path(&track_path);
+        std::fs::create_dir_all(manual.parent().unwrap()).unwrap();
+        std::fs::write(&manual, "[00:01.00] line\n").unwrap();
+
+        assert!(fetch_lyrics("Title", "Artist", "Album", 1.0, &track_path).is_some());
+
+        flag_lyrics(&track_path).unwrap();
+        assert!(has_flagged(&track_path));
+        assert!(fetch_lyrics("Title", "Artist", "Album", 1.0, &track_path).is_none());
+
+        unflag_lyrics(&track_path).unwrap();
+        assert!(!has_flagged(&track_path));
+        assert!(fetch_lyrics("Title", "Artist", "Album", 1.0, &track_path).is_some());
+
+        let _ = std::fs::remove_file(manual);
+    }
 
     #[test]
     fn formats_lrc_timestamps() {

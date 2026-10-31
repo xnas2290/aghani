@@ -134,6 +134,25 @@ fn parse_color(s: &str) -> Color {
     }
 }
 
+fn lighten_color(c: Color, factor: f32) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => {
+            let f = factor.clamp(0.0, 1.0);
+            let lr = (r as f32 + (255.0 - r as f32) * f) as u8;
+            let lg = (g as f32 + (255.0 - g as f32) * f) as u8;
+            let lb = (b as f32 + (255.0 - b as f32) * f) as u8;
+            Color::Rgb(lr, lg, lb)
+        }
+        Color::Blue => Color::LightBlue,
+        Color::Cyan => Color::LightCyan,
+        Color::Green => Color::LightGreen,
+        Color::Magenta => Color::LightMagenta,
+        Color::Red => Color::LightRed,
+        Color::Yellow => Color::LightYellow,
+        other => other,
+    }
+}
+
 pub struct Theme;
 
 impl Theme {
@@ -160,7 +179,7 @@ impl Theme {
             if let Some(dc) = dynamic() {
                 return Style::default()
                     .fg(dc.background)
-                    .bg(dc.primary)
+                    .bg(lighten_color(dc.primary, 0.35))
                     .add_modifier(Modifier::BOLD);
             }
         }

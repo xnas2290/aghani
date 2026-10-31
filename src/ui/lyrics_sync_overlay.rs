@@ -36,7 +36,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(inner);
 
     let total = app.lyrics_sync_lines.len();
-    let selected = app.lyrics_sync_index.unwrap_or(0).min(total.saturating_sub(1));
+    let selected = app
+        .lyrics_sync_index
+        .unwrap_or(0)
+        .min(total.saturating_sub(1));
     let playback_state = if app.player.is_paused() {
         "paused"
     } else {
@@ -85,11 +88,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         } else {
             Theme::dim()
         };
-        let time_style = if is_selected {
-            row_style
-        } else {
-            Theme::dim()
-        };
+        let time_style = if is_selected { row_style } else { Theme::dim() };
 
         items.push(ListItem::new(Line::from(vec![
             Span::styled(prefix, time_style),
@@ -99,9 +98,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let height = rows[1].height as usize;
     let max_offset = total.saturating_sub(height);
-    let offset = selected
-        .saturating_sub(height / 2)
-        .min(max_offset);
+    let offset = selected.saturating_sub(height / 2).min(max_offset);
 
     let mut state = ListState::default();
     state.select(Some(selected));
@@ -139,12 +136,7 @@ fn truncate(text: &str, width: usize) -> String {
 }
 
 fn centered_rect(area: Rect) -> Rect {
-    let width = area
-        .width
-        .min(88)
-        .saturating_sub(4)
-        .max(20)
-        .min(area.width);
+    let width = area.width.min(88).saturating_sub(4).max(20).min(area.width);
     let height = area
         .height
         .min(30)

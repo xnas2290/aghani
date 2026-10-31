@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub fn handle_mouse_click(
     app: &mut App,
@@ -38,6 +39,24 @@ pub fn handle_mouse_click(
         if y == rows[2].y && x < inner.x.saturating_add(10) {
             app.toggle_play()?;
             return Ok(true);
+        }
+        if y == rows[2].y {
+            let play_icon = if app.player.is_paused() {
+                " ▶ PAUSED "
+            } else {
+                " ⏸ PLAYING"
+            };
+            let controls = format!("{play_icon}{}", compact_repeat_text(&app.repeat));
+            let control_start = inner.x.saturating_add(controls.width() as u16);
+            let repeat_width = compact_repeat_text(&app.repeat).width() as u16;
+            if x >= control_start.saturating_sub(repeat_width) && x < control_start {
+                app.toggle_repeat();
+                return Ok(true);
+            }
+            if x >= control_start && x < control_start.saturating_add(3) {
+                app.toggle_shuffle();
+                return Ok(true);
+            }
         }
         if y == rows[2].y && x >= inner.right().saturating_sub(18) {
             return Ok(true);
@@ -75,6 +94,24 @@ pub fn handle_mouse_click(
             app.toggle_play()?;
             return Ok(true);
         }
+        if y == status.y {
+            let play_icon = if app.player.is_paused() {
+                " PAUSED "
+            } else {
+                " PLAYING"
+            };
+            let controls = format!("  {play_icon} {}", full_repeat_text(&app.repeat));
+            let control_start = inner.x.saturating_add(controls.width() as u16);
+            let repeat_width = full_repeat_text(&app.repeat).width() as u16;
+            if x >= control_start.saturating_sub(repeat_width) && x < control_start {
+                app.toggle_repeat();
+                return Ok(true);
+            }
+            if x >= control_start && x < control_start.saturating_add(5) {
+                app.toggle_shuffle();
+                return Ok(true);
+            }
+        }
         if y == status.y && x >= inner.right().saturating_sub(18) {
             return Ok(true);
         }
@@ -93,6 +130,20 @@ pub fn handle_mouse_click(
     }
 
     Ok(false)
+}
+
+fn compact_repeat_text(repeat: &RepeatMode) -> &'static str {
+    match repeat {
+        RepeatMode::Off | RepeatMode::All => "  ",
+        RepeatMode::One => " 1 ",
+    }
+}
+
+fn full_repeat_text(repeat: &RepeatMode) -> &'static str {
+    match repeat {
+        RepeatMode::Off | RepeatMode::All => " ",
+        RepeatMode::One => "1 ",
+    }
 }
 
 pub fn is_volume_area(area: Rect, x: u16, y: u16, compact: bool) -> bool {

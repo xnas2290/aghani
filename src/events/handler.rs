@@ -39,12 +39,22 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                     {
                         let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
                         crate::ui::lyrics_panel::handle_mouse_scroll(app, area, up);
-                    } else {
+                    } else if crate::ui::layout::cover_area(app, terminal_area).is_some_and(
+                        |area| {
+                            area.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                        },
+                    ) {
                         match mouse.kind {
-                            MouseEventKind::ScrollUp => app.select_prev(),
-                            MouseEventKind::ScrollDown => app.select_next(),
+                            MouseEventKind::ScrollUp => app.prev_track()?,
+                            MouseEventKind::ScrollDown => app.next_track()?,
                             _ => unreachable!(),
                         }
+                    } else {
+                        let columns = crate::ui::layout::library_area(app, terminal_area)
+                            .map(|area| (area.width.saturating_sub(2) / 18).max(1) as usize)
+                            .unwrap_or(1);
+                        let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                        app.scroll_list(up, columns);
                     }
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -168,7 +178,7 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
             if app.artwork_path_mode {
                 match key.code {
                     KeyCode::Esc => app.cancel_artwork_path(),
-                    KeyCode::Enter => app.confirm_artwork_path(),
+                    KeyCode::Enter => app.confirm_artwork_path()?,
                     KeyCode::Backspace => {
                         app.artwork_path_input.pop();
                     }
@@ -246,6 +256,15 @@ pub fn handle_events(app: &mut App) -> Result<bool> {
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             {
                 app.update_seek(key.code == KeyCode::Right);
+                return Ok(false);
+            }
+
+            if app.layout_mode.ends_with("_lyrics")
+                && matches!(key.code, KeyCode::Up | KeyCode::Down)
+            {
+                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                    app.step_synced_lyrics(key.code == KeyCode::Down)?;
+                }
                 return Ok(false);
             }
 

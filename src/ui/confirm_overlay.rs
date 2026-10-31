@@ -51,7 +51,7 @@ fn draw_artwork_path(f: &mut Frame, app: &App, area: Rect) {
         chunks[0],
     );
     let text = if app.artwork_path_input.is_empty() {
-        Span::styled(" /path/to/image.jpg", Theme::dim())
+        Span::styled(" https://example.com/cover.jpg", Theme::dim())
     } else {
         Span::styled(format!(" {}█", app.artwork_path_input), Theme::normal())
     };
@@ -64,7 +64,7 @@ fn draw_artwork_path(f: &mut Frame, app: &App, area: Rect) {
         chunks[1],
     );
     f.render_widget(
-        Paragraph::new("Enter ↵ / Esc ⎋")
+        Paragraph::new("Image URL • Enter ↵ / Esc ⎋")
             .alignment(Alignment::Center)
             .style(Theme::dim()),
         chunks[2],

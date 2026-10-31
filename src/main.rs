@@ -1,32 +1,64 @@
 mod app;
 mod audio;
 mod config;
+#[cfg(feature = "tui")]
 mod cover;
+#[cfg(feature = "gui")]
+#[path = "ui/dynamic_theme.rs"]
+mod dynamic_theme;
 mod error;
+#[cfg(feature = "tui")]
 mod events;
 mod file_manager;
+#[cfg(feature = "gui")]
+mod gui;
 mod ipc;
 mod library;
 mod mpris;
+#[cfg(feature = "tui")]
 mod ui;
 use anyhow::Result;
+#[cfg(feature = "tui")]
 use app::App;
+#[cfg(feature = "tui")]
 use config::{Config, State};
 mod lyrics;
+#[cfg(feature = "tui")]
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+#[cfg(feature = "tui")]
 use events::handler::handle_events;
-use library::cache::MetadataCache;
+#[cfg(feature = "tui")]
 use ratatui::{backend::CrosstermBackend, Terminal};
+#[cfg(feature = "tui")]
 use std::sync::mpsc;
 // use std::{env, io};
+#[cfg(feature = "tui")]
 use std::io;
 mod cli;
 
+#[cfg(all(feature = "gui", feature = "tui"))]
+compile_error!("Enable exactly one interface feature: `tui` or `gui`.");
+
+#[cfg(not(any(feature = "gui", feature = "tui")))]
+compile_error!("Enable an interface feature: `tui` or `gui`.");
+
+#[cfg(feature = "tui")]
 fn main() -> Result<()> {
+    tui_main()
+}
+
+#[cfg(feature = "gui")]
+fn main() -> Result<()> {
+    gui::run()?;
+    Ok(())
+}
+
+#[cfg(feature = "tui")]
+fn tui_main() -> Result<()> {
     use cli::{ClearTarget, CliAction};
 
     match cli::parse_args() {
@@ -84,6 +116,7 @@ fn check_dependencies() -> Result<()> {
     }
     Ok(())
 }
+#[cfg(feature = "tui")]
 fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     let pid = std::process::id();
     std::panic::set_hook(Box::new(move |info| {
@@ -125,60 +158,23 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Metadata channel. The cache is loaded on the metadata thread so it does
-    // not delay the first frame.
-    let cache_path = library::cache::default_cache_path();
-    let (meta_tx, meta_rx) = mpsc::channel();
-
     // IPC channel
     let (ipc_tx, ipc_rx) = mpsc::channel::<ipc::IpcCommand>();
     ipc::server::start_ipc(ipc_tx);
 
-    // Create app
-    // let mut app = App::new(&music_dir, meta_rx, &config)?;
-    let mut app = App::new(&music_dir, meta_rx, &config)?;
+    // Create app and start the shared background metadata loader.
+    let mut app = App::new(&music_dir, &config)?;
     let (mpris_rx, mpris_update_tx) = mpris::start_mpris();
     app.mpris_rx = Some(mpris_rx);
     app.mpris_update_tx = Some(mpris_update_tx);
     app.ipc_rx = Some(ipc_rx);
 
-    // Background metadata loader
-    let tracks_paths: Vec<_> = app.tracks.iter().map(|t| t.path.clone()).collect();
-    let cache_path_clone = cache_path.clone();
     // Set panic hook to clean up lock file on unexpected exit
     let lock_path_panic = lock_path.to_string();
     std::panic::set_hook(Box::new(move |info| {
         let _ = std::fs::remove_file(&lock_path_panic);
         eprintln!("Panic: {}", info);
     }));
-    std::thread::spawn(move || {
-        let mut cache = MetadataCache::load(&cache_path_clone);
-        let mut dirty = false;
-        for (i, path) in tracks_paths.iter().enumerate() {
-            let mut track = crate::library::track::Track::new(path.clone());
-            if let Some(cached) = cache.get_valid(path) {
-                track.title = cached.title.clone();
-                track.artist = cached.artist.clone();
-                track.album = cached.album.clone();
-                track.duration = std::time::Duration::from_secs_f64(cached.duration_secs);
-                track.has_cover = cached.has_cover;
-                track.bitrate = cached.bitrate;
-                track.sample_rate = cached.sample_rate;
-                track.channels = cached.channels;
-                track.replaygain = cached.replaygain;
-            } else if crate::audio::metadata::enrich_track_metadata(&mut track).is_ok() {
-                cache.insert(path.clone(), &track);
-                dirty = true;
-            }
-            if meta_tx.send((i, track)).is_err() {
-                break;
-            }
-        }
-        if dirty {
-            let _ = cache.save(&cache_path_clone);
-        }
-    });
-
     let result = run_loop(&mut terminal, &mut app, &config, &state);
     //clear icp socket on exit
     // Clear IPC status files on clean exit
@@ -196,6 +192,7 @@ fn run(dir_override: Option<std::path::PathBuf>) -> Result<()> {
     state.last_tab = Some(format!("{:?}", app.active_tab));
     state.volume = Some(app.player.volume);
     state.history = app.history.clone();
+    state.pending_history = app.pending_history.clone();
     state.play_counts = app.play_counts.clone();
     state.artwork_overrides = app.artwork_overrides.clone();
     state.pinned_playlists = app.pinned_playlists.clone();
@@ -255,6 +252,7 @@ fn ensure_single_instance(lock_path: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "tui")]
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
